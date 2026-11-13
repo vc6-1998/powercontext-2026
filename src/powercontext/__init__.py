@@ -50,7 +50,11 @@ from powercontext.errors import (
     SourceProjectionNotFoundError,
 )
 from powercontext.sources import (
+    CSV_ROW_SOURCE_DEFINITION,
     AdapterSourceDefinition,
+    CSVDocumentInput,
+    CSVRowInput,
+    CSVRowSource,
     Source,
     SourceAdapter,
     SourceCatalog,
@@ -62,10 +66,13 @@ from powercontext.sources import (
     SourceProjectionKey,
     SourceRef,
     SourceStore,
+    csv_row_source_id,
+    parse_csv_document,
 )
 from powercontext.triggers import PolicyTransition, Trigger
 
 __all__ = [
+    "CSV_ROW_SOURCE_DEFINITION",
     "AdapterSourceDefinition",
     "Artifact",
     "ArtifactAddress",
@@ -78,6 +85,9 @@ __all__ = [
     "ArtifactRef",
     "ArtifactStore",
     "Artifacts",
+    "CSVDocumentInput",
+    "CSVRowInput",
+    "CSVRowSource",
     "ConnectorError",
     "ConnectorSubmissionRejectedError",
     "InvalidArtifactReferenceError",
@@ -113,4 +123,6 @@ __all__ = [
     "SourceStore",
     "Sources",
     "Trigger",
+    "csv_row_source_id",
+    "parse_csv_document",
 ]
