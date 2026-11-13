@@ -16,14 +16,14 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.supervision import ArtifactProcessingFence, ArtifactProcessingLeaseRepository
-from powercontext.builtin.persistence.tables import PROFILE_POLICIES_TABLE, SOURCE_JOURNAL_HEADS_TABLE
+from powercontext.builtin.persistence.tables import PROFILE_POLICIES_TABLE, SOURCE_JOURNAL_HEADS_TABLE, SOURCES_TABLE
 
 
 async def enabled_profile_scopes(connection: AsyncConnection, scope_ids: tuple[str, ...]) -> frozenset[str]:
@@ -41,6 +41,34 @@ async def enabled_profile_scopes(connection: AsyncConnection, scope_ids: tuple[s
         select(table.c.scope_id)
         .where(table.c.scope_id.in_(scope_ids), table.c.generation_enabled.is_(True))
         .with_for_update()
+    )
+    return frozenset(rows)
+
+
+async def source_count_ready_scopes(
+    connection: AsyncConnection,
+    scope_ids: tuple[str, ...],
+    *,
+    binding_name: str,
+    threshold: int,
+) -> frozenset[str]:
+    """Count persisted journal identities after each Family's committed cursor.
+
+    This uses the scope/position index, including lineage-only identities, without
+    loading Source bodies or treating generic dirty generations as Source counts.
+    """
+
+    if not scope_ids:
+        return frozenset()
+    cursors = await SourceCursorRepository().load_many(connection, scope_ids, binding_name)
+    table = SOURCES_TABLE
+    conditions = tuple(
+        (table.c.scope_id == scope_id)
+        & (table.c.journal_position > (cursors[scope_id].cursor.sequence if scope_id in cursors else 0))
+        for scope_id in scope_ids
+    )
+    rows = await connection.scalars(
+        select(table.c.scope_id).where(or_(*conditions)).group_by(table.c.scope_id).having(func.count() >= threshold)
     )
     return frozenset(rows)
 
