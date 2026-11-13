@@ -51,11 +51,15 @@ from powercontext.errors import (
 )
 from powercontext.sources import (
     CSV_ROW_SOURCE_DEFINITION,
+    PDF_PAGE_SOURCE_DEFINITION,
     PI_EVENT_SOURCE_DEFINITION,
     AdapterSourceDefinition,
     CSVDocumentInput,
     CSVRowInput,
     CSVRowSource,
+    PDFDocumentInput,
+    PDFPageInput,
+    PDFPageSource,
     PiEventInput,
     PiEventSource,
     PiSessionConnector,
@@ -73,12 +77,15 @@ from powercontext.sources import (
     SourceStore,
     csv_row_source_id,
     parse_csv_document,
+    parse_pdf_document,
     parse_pi_session,
+    search_pdf_pages,
 )
 from powercontext.triggers import PolicyTransition, Trigger
 
 __all__ = [
     "CSV_ROW_SOURCE_DEFINITION",
+    "PDF_PAGE_SOURCE_DEFINITION",
     "PI_EVENT_SOURCE_DEFINITION",
     "AdapterSourceDefinition",
     "Artifact",
@@ -107,6 +114,9 @@ __all__ = [
     "InvalidSourceProjectionError",
     "InvalidSourceReferenceError",
     "InvalidSourceResultError",
+    "PDFDocumentInput",
+    "PDFPageInput",
+    "PDFPageSource",
     "PiEventInput",
     "PiEventSource",
     "PiSessionConnector",
@@ -136,5 +146,7 @@ __all__ = [
     "Trigger",
     "csv_row_source_id",
     "parse_csv_document",
+    "parse_pdf_document",
     "parse_pi_session",
+    "search_pdf_pages",
 ]
