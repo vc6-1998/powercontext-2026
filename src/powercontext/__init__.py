@@ -51,10 +51,15 @@ from powercontext.errors import (
 )
 from powercontext.sources import (
     CSV_ROW_SOURCE_DEFINITION,
+    PI_EVENT_SOURCE_DEFINITION,
     AdapterSourceDefinition,
     CSVDocumentInput,
     CSVRowInput,
     CSVRowSource,
+    PiEventInput,
+    PiEventSource,
+    PiSessionConnector,
+    PiSessionInput,
     Source,
     SourceAdapter,
     SourceCatalog,
@@ -68,11 +73,13 @@ from powercontext.sources import (
     SourceStore,
     csv_row_source_id,
     parse_csv_document,
+    parse_pi_session,
 )
 from powercontext.triggers import PolicyTransition, Trigger
 
 __all__ = [
     "CSV_ROW_SOURCE_DEFINITION",
+    "PI_EVENT_SOURCE_DEFINITION",
     "AdapterSourceDefinition",
     "Artifact",
     "ArtifactAddress",
@@ -100,6 +107,10 @@ __all__ = [
     "InvalidSourceProjectionError",
     "InvalidSourceReferenceError",
     "InvalidSourceResultError",
+    "PiEventInput",
+    "PiEventSource",
+    "PiSessionConnector",
+    "PiSessionInput",
     "PolicyTransition",
     "PowerContext",
     "PowerContextError",
@@ -125,4 +136,5 @@ __all__ = [
     "Trigger",
     "csv_row_source_id",
     "parse_csv_document",
+    "parse_pi_session",
 ]
