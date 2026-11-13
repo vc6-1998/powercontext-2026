@@ -28,6 +28,12 @@ from powercontext.builtin.artifacts.memory.models import MemoryCitation, MemoryH
 from powercontext.builtin.artifacts.profile.models import Profile
 from powercontext.builtin.artifacts.topic_memory import TopicMemory, TopicMemorySearchHit
 from powercontext.builtin.runtime.errors import PreparedContextInvariantError
+from powercontext.builtin.runtime.evidence_selection import (
+    EvidenceDocument,
+    EvidenceFragment,
+    render_evidence,
+    select_evidence,
+)
 from powercontext.builtin.runtime.models import PrepareContextRequest, PreparedContext
 from powercontext.builtin.runtime.prepared_code import (
     CodeEvidenceRef,
@@ -106,6 +112,7 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
+    fragments: tuple[EvidenceFragment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -211,6 +218,8 @@ class PreparedContextBuilder:
         profile_candidates: Sequence[PreparedProfileCandidate] = (),
         code_candidates: Sequence[PreparedCodeCandidate] = (),
     ) -> PreparedContextBuild:
+        if request.evidence_selection:
+            return self._build_evidence(request, memory_candidates)
         if request.include_code:
 
             def historical(history_request: PrepareContextRequest, entries: int) -> PreparedContextBuild:
@@ -256,6 +265,38 @@ class PreparedContextBuilder:
             omissions=omissions,
         )
 
+    def _build_evidence(
+        self, request: PrepareContextRequest, candidates: Sequence[PreparedMemoryCandidates]
+    ) -> PreparedContextBuild:
+        if sum(len(group.hits) for group in candidates) > self.memory_candidate_limit:
+            raise PreparedContextInvariantError("memory-candidate-limit")
+        documents = []
+        seen = set()
+        for group in candidates:
+            for entry in self._memory_entries(group.memory_ref, group.hits, scope_id=group.scope_id):
+                address = entry.origin
+                if not isinstance(address, MemoryEntryAddress):
+                    raise PreparedContextInvariantError("text-scope-missing")
+                identity = (
+                    address.memory.scope_id,
+                    address.memory.artifact.artifact_id,
+                    address.memory.artifact.revision,
+                    address.entry_id,
+                    address.entry_version_id,
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    documents.append(EvidenceDocument(address, entry.content))
+        fragments = select_evidence(request.query, documents, request.max_bytes)
+        if not fragments:
+            return PreparedContextBuild(context=self.empty(), origins=())
+        content = render_evidence(fragments)
+        return PreparedContextBuild(
+            context=PreparedContext(status="ready", content=content, content_bytes=len(content.encode("utf-8"))),
+            origins=tuple(fragment.address for fragment in fragments),
+            fragments=fragments,
+        )
+
     def probe_budget(
         self,
         *,
@@ -277,6 +318,15 @@ class PreparedContextBuilder:
         counters because both go through :meth:`_select_entries`.
         """
 
+        if request.evidence_selection:
+            result = self._build_evidence(request, memory_candidates)
+            return RecallBudgetView(
+                max_bytes=request.max_bytes,
+                delivered_items=len(result.fragments),
+                truncated_items=0,
+                dropped_items=0,
+                unused_bytes=max(0, request.max_bytes - result.context.content_bytes),
+            )
         content, origins, omissions = self._select_entries(
             request=request,
             current_scope_id=current_scope_id,
