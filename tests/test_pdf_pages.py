@@ -181,3 +181,44 @@ async def test_report_page_without_original_question_words_is_not_lost_before_ra
             entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
             found.update(reference.source_id for reference in entry.sources)
         assert expected_source in found
+
+
+async def test_multi_statement_question_retains_each_required_financial_statement(tmp_path: Path) -> None:
+    registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+    income = "Consolidated Statement of Income\nNet revenue 1000\nOperating profit 120\nNet income 90"
+    cash = "Consolidated Statement of Cash Flows\nDepreciation and amortization 35\nCapital spending 200"
+    notes = [
+        f"Note {index}: segment results and non-GAAP measures\n"
+        "Derivative instruments\nFair value and cash flow hedges\nLosses recognized in\nIncome Statement\n"
+        "Operating income and adjusted EBITDA include depreciation and amortization. "
+        "Capital expenditures, cash flows, and income statement comparisons are discussed below. "
+        "Unadjusted operating income and cash flow statement disclosures include capex."
+        for index in range(25)
+    ]
+    pages = parse_pdf_document(PDFDocumentInput(document_id="ACME_2024_10K", content=make_pdf([income, cash, *notes])))
+    sources = [await registry.resolve(page) for page in pages]
+    observations = [project_source_for_transport(registry, source) for source in sources]
+    for document_id in ("OTHER_2024_10K", "ACME_2023_10K"):
+        related = "EBITDA operating income depreciation amortization cash flow statement capex " * 5
+        foreign_pages = parse_pdf_document(
+            PDFDocumentInput(
+                document_id=document_id, content=make_pdf([income + "\n" + related, cash + "\n" + related])
+            )
+        )
+        for page in foreign_pages:
+            source = await registry.resolve(page)
+            observations.append(project_source_for_transport(registry, source))
+    config, scope_id, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, observations)
+    async with open_builtin_runtime(config) as runtime:
+        memory = runtime.memory.for_scope(scope_id)
+        citations = await search_pdf_pages(
+            memory,
+            "What is ACME FY2024 EBITDA less capex? Use operating income from the income statement "
+            "and depreciation and amortization from the cash flow statement.",
+            limit=2,
+        )
+        found = set()
+        for citation in citations:
+            entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
+            found.update(reference.source_id for reference in entry.sources)
+        assert {source.name for source in sources[:2]} <= found

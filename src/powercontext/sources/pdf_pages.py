@@ -332,11 +332,22 @@ class _Candidate:
     rank_score: float = 0.0
 
 
+def _document_affinity(text: str, query_terms: set[str]) -> tuple[bool, bool]:
+    document_words = set(_tokens(text.partition("\n")[0]))
+    names = {
+        word
+        for word in document_words
+        if not word.isdigit()
+        and word not in {"k", "q", "annual", "report", "form", "financial", "inc", "corp", "company"}
+    }
+    years = {word for word in query_terms if re.fullmatch(r"(?:19|20)\d{2}", word)}
+    return bool(names & query_terms), bool(document_words & years)
+
+
 def _rank_pages(candidates: list[_Candidate], weights: dict[str, float], query_terms: set[str]) -> list[_Candidate]:
     counts = [Counter(_stem(token) for token in _tokens(candidate.text)) for candidate in candidates]
     document_frequency: Counter[str] = Counter(term for row in counts for term in row)
     average_length = sum(sum(row.values()) for row in counts) / max(len(counts), 1)
-    question_years = {word for word in query_terms if re.fullmatch(r"(?:19|20)\d{2}", word)}
     scored: list[tuple[float, _Candidate]] = []
     for candidate, terms in zip(candidates, counts, strict=True):
         length = sum(terms.values())
@@ -349,18 +360,74 @@ def _rank_pages(candidates: list[_Candidate], weights: dict[str, float], query_t
                 )
                 norm = frequency + 1.2 * (0.35 + 0.65 * length / max(average_length, 1.0))
                 score += weight * inverse_frequency * frequency * 2.2 / norm
-        document_words = set(_tokens(candidate.text.partition("\n")[0]))
-        names = {
-            word
-            for word in document_words
-            if not word.isdigit()
-            and word not in {"k", "q", "annual", "report", "form", "financial", "inc", "corp", "company"}
-        }
-        score += 2.0 * bool(names & query_terms)
-        score += 0.75 * bool(document_words & question_years)
+        issuer_match, year_match = _document_affinity(candidate.text, query_terms)
+        score += 2.0 * issuer_match + 0.75 * year_match
         scored.append((score, candidate))
     scored.sort(key=lambda item: (-item[0], item[1].citation.entry_id, item[1].citation.entry_version_id))
     return [candidate for _, candidate in scored]
+
+
+_STATEMENT_TITLES = {
+    "income": re.compile(r"^(?:statements? of (?:income|operations|earnings)|income statements?|profit and loss)\b"),
+    "cash": re.compile(r"^statements? of cash flows?\b"),
+    "balance": re.compile(r"^(?:balance sheets?|statements? of financial position)\b"),
+    "equity": re.compile(r"^statements? of (?:changes in )?(?:(?:shareholders|stockholders)'? )?equity\b"),
+}
+_TITLE_MODIFIERS = re.compile(r"^(?:(?:condensed|consolidated|combined|unaudited|audited|group|interim)\s+)+")
+
+
+def _requested_statements(query_terms: set[str]) -> set[str]:
+    requested = set()
+    has_statement = bool({"statement", "statements"} & query_terms)
+    if has_statement and {"income", "earnings", "operations", "pnl"} & query_terms:
+        requested.add("income")
+    if "cash" in query_terms and {"flow", "flows"} & query_terms:
+        requested.add("cash")
+    if "balance" in query_terms and {"sheet", "sheets"} & query_terms:
+        requested.add("balance")
+    if has_statement and "equity" in query_terms:
+        requested.add("equity")
+    return requested
+
+
+def _page_statements(text: str) -> set[str]:
+    # Read titles near the page start, rather than incidental mentions in notes.
+    # TOC entries ending in a page number are not financial statements themselves.
+    headings = [line.strip().casefold() for line in text.partition("\n")[2].splitlines() if line.strip()][:4]
+    return {
+        kind
+        for line in headings
+        if len(line) <= 160 and not re.search(r"\d\s*$", line)
+        for kind, pattern in _STATEMENT_TITLES.items()
+        if pattern.match(_TITLE_MODIFIERS.sub("", line))
+    }
+
+
+def _cover_requested_statements(ranked: list[_Candidate], query_terms: set[str]) -> list[_Candidate]:
+    requested = _requested_statements(query_terms)
+    if not requested:
+        return ranked
+    choices: dict[str, list[int]] = {kind: [] for kind in requested}
+    for index, candidate in enumerate(ranked):
+        for kind in _page_statements(candidate.text) & requested:
+            choices[kind].append(index)
+    for kind, indices in choices.items():
+        affinities = [(_document_affinity(ranked[index].text, query_terms), index) for index in indices]
+        best = max((affinity for affinity, _ in affinities), default=(False, False))
+        choices[kind] = [index for affinity, index in affinities if affinity == best][:2]
+    # Multi-part questions need each named statement, even when related notes
+    # repeat more of the question's vocabulary. Prefer matching issuer/year
+    # before taking a kind's best pages. Keep global rank within each
+    # coverage round, then fill the remaining places with the original ranking.
+    selected: list[int] = []
+    for depth in range(2):
+        for index in sorted({indices[depth] for indices in choices.values() if len(indices) > depth}):
+            if index not in selected:
+                selected.append(index)
+    selected_set = set(selected)
+    return [ranked[index] for index in selected] + [
+        row for index, row in enumerate(ranked) if index not in selected_set
+    ]
 
 
 async def _collect_page_candidates(memory: _PDFMemory, queries: list[str], limit: int) -> list[_Candidate]:
@@ -409,7 +476,7 @@ async def search_pdf_pages(memory: _PDFMemory, question: str, limit: int = 10) -
     candidates = await _collect_page_candidates(memory, queries, limit)
     seen_pages: set[str] = set()
     selected: list[MemoryCitation] = []
-    for candidate in _rank_pages(candidates, weights, question_terms):
+    for candidate in _cover_requested_statements(_rank_pages(candidates, weights, question_terms), question_terms):
         record = (await memory.get(GetMemoryEntryRequest(citation=candidate.citation))).entry
         page_ids = {source.source_id for source in record.sources if source.source_type == "pdf-page"}
         if len(page_ids) != 1:
