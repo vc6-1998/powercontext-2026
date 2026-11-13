@@ -145,3 +145,39 @@ async def test_multi_document_financial_queries_keep_real_distinct_page_citation
             assert len(citations) == len(found) <= 2
         assert await search_pdf_pages(memory, "BETA cash flow", limit=0) == ()
         assert await search_pdf_pages(memory, " ", limit=10) == ()
+
+
+async def test_long_page_preserves_full_memory_citation_without_truncation(tmp_path: Path) -> None:
+    text = "Operating income and revenue reported in complete financial statements. " * 160
+    (page,) = parse_pdf_document(PDFDocumentInput(document_id="LARGE_2024_10K", content=make_pdf([text])))
+    assert len(page.text.encode("utf-8")) > 8192
+    registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+    source = await registry.resolve(page)
+    observation = project_source_for_transport(registry, source)
+    config, scope_id, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, [observation])
+    async with open_builtin_runtime(config) as runtime:
+        citations = await search_pdf_pages(runtime.memory.for_scope(scope_id), "LARGE operating income", limit=1)
+        assert len(citations) == 1
+        entry = (await runtime.memory.for_scope(scope_id).get(GetMemoryEntryRequest(citation=citations[0]))).entry
+        assert entry.text == f"{page.document_id}\n{page.text}".strip()
+
+
+async def test_report_page_without_original_question_words_is_not_lost_before_ranking(tmp_path: Path) -> None:
+    texts = ["OPERATEX company overview for fiscal 2024."]
+    texts.extend(["Annual filing schedule and employee training policy."] * 110)
+    texts.append("Asia Pacific, Europe and North America market distribution.")
+    pages = parse_pdf_document(PDFDocumentInput(document_id="OPERATEX_2024_10K", content=make_pdf(texts)))
+    registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+    observations = [project_source_for_transport(registry, await registry.resolve(page)) for page in pages]
+    expected_source = observations[-1].name
+    config, scope_id, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, observations)
+    async with open_builtin_runtime(config) as runtime:
+        memory = runtime.memory.for_scope(scope_id)
+        citations = await search_pdf_pages(
+            memory, "What geographies does OPERATEX primarily operate in FY2024?", limit=20
+        )
+        found = set()
+        for citation in citations:
+            entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
+            found.update(reference.source_id for reference in entry.sources)
+        assert expected_source in found

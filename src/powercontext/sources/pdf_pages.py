@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
     from powercontext.builtin.runtime.models import (
         GetMemoryEntryRequest,
+        MemoryEntriesPage,
         MemoryEntryRecord,
         MemorySearchPage,
         SearchMemoryRequest,
@@ -151,6 +152,7 @@ PDF_PAGE_SOURCE_DEFINITION: SourceDefinition[PDFPageInput, PDFPageSource, PDFPag
 
 
 class _PDFMemory(Protocol):
+    async def list(self) -> MemoryEntriesPage: ...
     async def search(self, request: SearchMemoryRequest, /) -> MemorySearchPage: ...
     async def get(self, request: GetMemoryEntryRequest, /) -> MemoryEntryRecord: ...
 
@@ -361,15 +363,27 @@ def _rank_pages(candidates: list[_Candidate], weights: dict[str, float], query_t
     return [candidate for _, candidate in scored]
 
 
-async def search_pdf_pages(memory: _PDFMemory, question: str, limit: int = 10) -> tuple[MemoryCitation, ...]:
-    """Fuse lexical probes, rank full page text, and return distinct real citations."""
+async def _collect_page_candidates(memory: _PDFMemory, queries: list[str], limit: int) -> list[_Candidate]:
+    """Read one active scope snapshot, then add lexical evidence to its real citations."""
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
-    from powercontext.builtin.runtime.models import GetMemoryEntryRequest, SearchMemoryRequest
+    from powercontext.builtin.runtime.models import SearchMemoryRequest
 
-    if limit <= 0 or not question.strip():
-        return ()
-    queries, weights, question_terms = _queries(question)
     candidates: dict[tuple[str, int, str, str], _Candidate] = {}
+    # Use the public active-head view to retain pages absent from lexical probes.
+    # Candidate text and citations both come from Memory, never from report files
+    # or annotations. The task corpus is bounded and the ranking is request-local.
+    active = await memory.list()
+    for record in active.entries:
+        page_ids = {source.source_id for source in record.entry.sources if source.source_type == "pdf-page"}
+        if len(page_ids) == 1:
+            citation = record.citation
+            key = (
+                citation.memory_ref.artifact_id,
+                citation.memory_ref.revision,
+                citation.entry_id,
+                citation.entry_version_id,
+            )
+            candidates[key] = _Candidate(citation, record.entry.text)
     for query in queries:
         page = await memory.search(SearchMemoryRequest(query=query, mode="fts", limit=max(100, limit * 4)))
         for rank, hit in enumerate(page.hits, start=1):
@@ -382,9 +396,20 @@ async def search_pdf_pages(memory: _PDFMemory, question: str, limit: int = 10) -
                     hit.text,
                 )
             candidates[key].rank_score += 1.0 / (60 + rank)
+    return list(candidates.values())
+
+
+async def search_pdf_pages(memory: _PDFMemory, question: str, limit: int = 10) -> tuple[MemoryCitation, ...]:
+    """Fuse lexical probes, rank full page text, and return distinct real citations."""
+    from powercontext.builtin.runtime.models import GetMemoryEntryRequest
+
+    if limit <= 0 or not question.strip():
+        return ()
+    queries, weights, question_terms = _queries(question)
+    candidates = await _collect_page_candidates(memory, queries, limit)
     seen_pages: set[str] = set()
     selected: list[MemoryCitation] = []
-    for candidate in _rank_pages(list(candidates.values()), weights, question_terms):
+    for candidate in _rank_pages(candidates, weights, question_terms):
         record = (await memory.get(GetMemoryEntryRequest(citation=candidate.citation))).entry
         page_ids = {source.source_id for source in record.sources if source.source_type == "pdf-page"}
         if len(page_ids) != 1:

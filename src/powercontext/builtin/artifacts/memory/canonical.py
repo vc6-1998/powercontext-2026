@@ -27,6 +27,7 @@ import rfc8785
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from powercontext.builtin.artifacts.memory.models import MemoryContent
+from powercontext.limits import MAX_SOURCE_OBSERVATION_BYTES
 
 _ENTRY_HASH_DOMAIN = b"powercontext:entry-content:v1\0"
 _EMBEDDING_HASH_DOMAIN = b"powercontext:embedding-content:v1\0"
@@ -38,6 +39,7 @@ class _CanonicalValueError(ValueError):
         self.code = code
         messages = {
             "text-too-long": "memory entry text must not exceed 8192 UTF-8 bytes",
+            "pdf-text-too-long": "PDF-backed memory text exceeds the captured Source byte limit",
             "reason-too-long": "memory change reason must not exceed 512 Unicode code points",
             "identifier-empty": "memory identifiers must be non-empty strings",
             "identifier-ascii": "memory identifiers must contain only ASCII characters",
@@ -84,6 +86,22 @@ def normalize_text(value: str) -> str:
     normalized = _normalize_non_empty_string(value, "memory entry text")
     if len(normalized.encode("utf-8")) > 8192:
         raise _CanonicalValueError("text-too-long")
+    return normalized
+
+
+def normalize_entry_text(value: str, *, source_refs: Sequence[object]) -> str:
+    """Keep complete captured PDF pages within their existing Source size budget.
+
+    Other Memory additions retain the 8192-byte body contract. PDF page evidence
+    must remain whole so its citation still identifies the exact physical page.
+    """
+    if not source_refs or not all(
+        isinstance(reference, Mapping) and reference.get("source_type") == "pdf-page" for reference in source_refs
+    ):
+        return normalize_text(value)
+    normalized = _normalize_non_empty_string(value, "memory entry text")
+    if len(normalized.encode("utf-8")) > MAX_SOURCE_OBSERVATION_BYTES:
+        raise _CanonicalValueError("pdf-text-too-long")
     return normalized
 
 
@@ -160,7 +178,7 @@ def entry_content_bytes(
 
     return canonical_json({
         "kind": normalize_kind(kind),
-        "text": normalize_text(text),
+        "text": normalize_entry_text(text, source_refs=source_refs),
         "source_refs": normalize_refs(source_refs),
         "artifact_refs": normalize_refs(artifact_refs),
     })

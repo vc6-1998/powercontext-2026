@@ -182,3 +182,30 @@ def test_embedding_hash_binds_profile_and_entry_content() -> None:
 
     assert first != second
     assert len(first) == 64
+
+
+def test_complete_pdf_page_bodies_use_the_captured_source_budget() -> None:
+    from powercontext.builtin.artifacts.memory.canonical import normalize_entry_text
+    from powercontext.limits import MAX_SOURCE_OBSERVATION_BYTES
+
+    references = ({"source_type": "pdf-page", "source_id": "page"},)
+    text = "界" * 4000
+    assert normalize_entry_text(text, source_refs=references) == text
+    assert len(entry_content_hash(kind="page", text=text, source_refs=references, artifact_refs=())) == 64
+    with pytest.raises(ValueError, match="Source byte limit"):
+        normalize_entry_text("x" * (MAX_SOURCE_OBSERVATION_BYTES + 1), source_refs=references)
+
+
+@pytest.mark.parametrize(
+    "references",
+    [
+        (),
+        ({"source_type": "pi-event", "source_id": "event"},),
+        ({"source_type": "pdf-page", "source_id": "page"}, {"source_type": "csv-row", "source_id": "row"}),
+    ],
+)
+def test_ordinary_or_mixed_memory_evidence_retains_8192_byte_limit(references: tuple[dict[str, str], ...]) -> None:
+    from powercontext.builtin.artifacts.memory.canonical import normalize_entry_text
+
+    with pytest.raises(ValueError, match="8192 UTF-8 bytes"):
+        normalize_entry_text("界" * 2731, source_refs=references)
