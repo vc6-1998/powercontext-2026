@@ -143,6 +143,7 @@ from powercontext.builtin.persistence.artifact_governance import (
     ArtifactGovernance,
     ArtifactLifecycleState,
 )
+from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.skill_publications import SkillPublication
 from powercontext.builtin.publication import ArtifactPublicationApplication
 from powercontext.builtin.records import (
@@ -249,6 +250,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     build_recall_candidates,
     recall_effort,
 )
+from powercontext.builtin.runtime.source_lifecycle import SourceLifecycleApplication
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -3046,6 +3048,7 @@ class BuiltinRuntime:
         remote_ingestion: RemoteIngestion | None = None,
         dream_service: DreamService | None = None,
         generation_concurrency: int = 4,
+        lifecycle_database: AsyncDatabase | None = None,
     ) -> None:
         if source_window_limit < 1:
             raise _RuntimeConfigurationError("source_window_limit")
@@ -3128,6 +3131,7 @@ class BuiltinRuntime:
         self.handoff = HandoffApplication(self)
         self.work = WorkApplication(self)
         self.memory = MemoryApplication(self)
+        self.lifecycle = SourceLifecycleApplication(self, lifecycle_database)
         self.topic_memory = TopicMemoryApplication(self)
         self.records = RecordApplication(self)
         self.prompts = PromptApplication(self)
