@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "requirements": {
+    "runnable": "passed",
+    "minimax_actual_use": "passed",
+    "context_correct_and_updated": "passed",
+    "seekdb_actual_use": "passed",
+    "state_reused_after_restart": "passed",
+    "code_change_effective": "passed"
+  },
+  "official_submission_ready": true,
+  "state_directory": "/tmp/sdd-55ag_dlz",
+  "baseline": {
+    "target_failures": 4,
+    "regression_tests": 10
+  },
+  "test_files_sha256": {
+    "test_deadline.py": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+    "test_regression.py": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+  },
+  "before_source_sha256": {
+    "tasks.py": "7a8c5eb501390c108282d8bf2145221941918f3db232781a203666fa547cfbb8",
+    "tests/test_deadline.py": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+    "tests/test_regression.py": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+  },
+  "after_source_sha256": {
+    "tasks.py": "561d1228d78e66aef80c9675adcc77ed7d8f6424bda18e125a7936b5ba323ac0",
+    "tests/test_deadline.py": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+    "tests/test_regression.py": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+  }
+}

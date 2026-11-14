@@ -1,0 +1,11 @@
+--- before/tasks.py
++++ after/tasks.py
+@@ -17,7 +17,7 @@
+         if cutoff is not None:
+             if task.get("due_date") is None:
+                 continue
+-            if not date.fromisoformat(task["due_date"]) < cutoff:
++            if not date.fromisoformat(task["due_date"]) <= cutoff:
+                 continue
+         selected.append(dict(task))
+     return selected if limit is None else selected[:limit]

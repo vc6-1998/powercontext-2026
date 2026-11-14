@@ -1,0 +1,76 @@
+{
+  "engine": "seekdb",
+  "version": "5.7.25-OceanBase seekdb-v1.3.0.0",
+  "queries": [
+    {
+      "sql": "SELECT path,kind,revision,content,(CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END) AS score FROM sdd_documents WHERE project=%s AND kind=%s HAVING score>0 ORDER BY score DESC,path LIMIT %s",
+      "parameters": [
+        "%deadline%",
+        "%due!_on!_or!_before%",
+        "%cutoff%",
+        "%inclusive%",
+        "%select!_tasks%",
+        "%status%",
+        "%order%",
+        "%limit%",
+        "taskboard",
+        "spec",
+        4
+      ],
+      "returned": [
+        {
+          "path": "specs/filtering.md",
+          "sha256": "672e9165366975fdb4cd24890579361b41917037bb348d94b335deb42a69df7c"
+        }
+      ]
+    },
+    {
+      "sql": "SELECT path,kind,revision,content,(CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END) AS score FROM sdd_documents WHERE project=%s AND kind=%s HAVING score>0 ORDER BY score DESC,path LIMIT %s",
+      "parameters": [
+        "%deadline%",
+        "%due!_on!_or!_before%",
+        "%cutoff%",
+        "%inclusive%",
+        "%select!_tasks%",
+        "%status%",
+        "%order%",
+        "%limit%",
+        "taskboard",
+        "code",
+        4
+      ],
+      "returned": [
+        {
+          "path": "tasks.py",
+          "sha256": "7a8c5eb501390c108282d8bf2145221941918f3db232781a203666fa547cfbb8"
+        }
+      ]
+    },
+    {
+      "sql": "SELECT path,kind,revision,content,(CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END) AS score FROM sdd_documents WHERE project=%s AND kind=%s HAVING score>0 ORDER BY score DESC,path LIMIT %s",
+      "parameters": [
+        "%deadline%",
+        "%due!_on!_or!_before%",
+        "%cutoff%",
+        "%inclusive%",
+        "%select!_tasks%",
+        "%status%",
+        "%order%",
+        "%limit%",
+        "taskboard",
+        "test",
+        4
+      ],
+      "returned": [
+        {
+          "path": "tests/test_deadline.py",
+          "sha256": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795"
+        },
+        {
+          "path": "tests/test_regression.py",
+          "sha256": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+        }
+      ]
+    }
+  ]
+}

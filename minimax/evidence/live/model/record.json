@@ -1,0 +1,32 @@
+{
+  "provider": "MiniMax",
+  "live_call": true,
+  "endpoint": "https://api.minimax.cn/v1/chat/completions",
+  "requested_model": "MiniMax-M3.1-Flash",
+  "returned_model": "MiniMax-M3.1-Flash",
+  "response_id": "07475e0d26874423749b26abc3edea96",
+  "timestamp": "2026-11-14T09:34:06.564855+00:00",
+  "usage": {
+    "total_tokens": 3666,
+    "total_characters": 0,
+    "prompt_tokens": 3314,
+    "completion_tokens": 352,
+    "completion_tokens_details": {
+      "reasoning_tokens": 64
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 128
+    }
+  },
+  "finish_reason": "stop",
+  "request_sha256": "30b055a15aeadbceb364032a34134105755eaeae5b714fc3b6d6734f01427c55",
+  "files": [
+    {
+      "path": "tasks.py",
+      "content": "\"\"\"Taskboard filtering library. Dates are ISO calendar dates (YYYY-MM-DD).\"\"\"\n\nfrom datetime import date\n\n\ndef select_tasks(tasks, *, status=None, due_on_or_before=None, limit=None):\n    \"\"\"Select tasks by status and deadline without changing the caller's data.\"\"\"\n    if status not in (None, \"open\", \"done\"):\n        raise ValueError(\"status must be open or done\")\n    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):\n        raise ValueError(\"limit must be a nonnegative integer\")\n    cutoff = date.fromisoformat(due_on_or_before) if due_on_or_before is not None else None\n    selected = []\n    for task in tasks:\n        if status is not None and task[\"status\"] != status:\n            continue\n        if cutoff is not None:\n            if task.get(\"due_date\") is None:\n                continue\n            if not date.fromisoformat(task[\"due_date\"]) <= cutoff:\n                continue\n        selected.append(dict(task))\n    return selected if limit is None else selected[:limit]\n"
+    }
+  ],
+  "file_sha256": {
+    "tasks.py": "561d1228d78e66aef80c9675adcc77ed7d8f6424bda18e125a7936b5ba323ac0"
+  }
+}

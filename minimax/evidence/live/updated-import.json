@@ -1,0 +1,27 @@
+[
+  {
+    "path": "specs/appearance.md",
+    "kind": "spec",
+    "sha256": "bd7672a17a912a60d55a85a99387d11856261c37ee1a7a6b420b7e5a32cb75e3"
+  },
+  {
+    "path": "specs/filtering.md",
+    "kind": "spec",
+    "sha256": "672e9165366975fdb4cd24890579361b41917037bb348d94b335deb42a69df7c"
+  },
+  {
+    "path": "tasks.py",
+    "kind": "code",
+    "sha256": "7a8c5eb501390c108282d8bf2145221941918f3db232781a203666fa547cfbb8"
+  },
+  {
+    "path": "tests/test_deadline.py",
+    "kind": "test",
+    "sha256": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795"
+  },
+  {
+    "path": "tests/test_regression.py",
+    "kind": "test",
+    "sha256": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+  }
+]

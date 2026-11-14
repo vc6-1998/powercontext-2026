@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/home/vc6/oceanbase/powercontext-ecosystem-minimax/minimax/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-c",
+    "/home/vc6/oceanbase/powercontext-ecosystem-minimax/minimax/.runs/live-20261114/after/pytest.ini",
+    "--confcutdir",
+    "/home/vc6/oceanbase/powercontext-ecosystem-minimax/minimax/.runs/live-20261114/after",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=/home/vc6/oceanbase/powercontext-ecosystem-minimax/minimax/.runs/live-20261114/after-target.xml",
+    "tests/test_deadline.py"
+  ],
+  "exit_code": 0,
+  "source_sha256": {
+    "tasks.py": "561d1228d78e66aef80c9675adcc77ed7d8f6424bda18e125a7936b5ba323ac0",
+    "tests/test_deadline.py": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+    "tests/test_regression.py": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+  },
+  "tests": 4,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "failed_cases": []
+}

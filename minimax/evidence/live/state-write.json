@@ -1,0 +1,29 @@
+{
+  "scope_id": "scp_018z84ab8bt0gjbw0ct5k9qksd",
+  "state": {
+    "done": [
+      "Imported engineering sources",
+      "Updated specifications to revision 2",
+      "Verified baseline functional failure and passing regressions"
+    ],
+    "project": "taskboard",
+    "task_id": "deadline-inclusive",
+    "todo": [
+      "Ask MiniMax to fix tasks.py",
+      "Run unchanged target and regression tests"
+    ],
+    "validation": {
+      "regression_exit_code": 0,
+      "target_exit_code": 1
+    }
+  },
+  "citation": {
+    "memory_ref": {
+      "family": "memory",
+      "artifact_id": "memory",
+      "revision": 1
+    },
+    "entry_id": "mem_ent_2e414472df934fd09636849511719c43",
+    "entry_version_id": "mem_ver_fb0fc311afe84fbcb475d1af8136873f"
+  }
+}

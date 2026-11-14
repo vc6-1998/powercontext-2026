@@ -1,0 +1,59 @@
+{
+  "implementation_commit": "a3eff90c12456554922f035dc6a16aa0d7481191",
+  "live_command": ".venv/bin/python run_demo.py --generate --output .runs/live-20261114",
+  "live_exit_code": 0,
+  "replay_command": ".venv/bin/python run_demo.py --env-file /dev/null --replay evidence/live/model --output .runs/review-20261114",
+  "replay_exit_code": 0,
+  "replay_environment": "MINIMAX_API_KEY and PYTHONPATH unset; fresh /tmp/sdd-* database directory",
+  "successful_live_calls": 1,
+  "response_id": "07475e0d26874423749b26abc3edea96",
+  "usage": {
+    "total_tokens": 3666,
+    "total_characters": 0,
+    "prompt_tokens": 3314,
+    "completion_tokens": 352,
+    "completion_tokens_details": {
+      "reasoning_tokens": 64
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 128
+    }
+  },
+  "artifact_sha256": {
+    "after/pytest.ini": "b160d82f7811555051f8966d8e02750a985227c1d022208c784e606946f2eada",
+    "after/specs/appearance.md": "bd7672a17a912a60d55a85a99387d11856261c37ee1a7a6b420b7e5a32cb75e3",
+    "after/specs/filtering.md": "672e9165366975fdb4cd24890579361b41917037bb348d94b335deb42a69df7c",
+    "after/tasks.py": "561d1228d78e66aef80c9675adcc77ed7d8f6424bda18e125a7936b5ba323ac0",
+    "after/tests/test_deadline.py": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+    "after/tests/test_regression.py": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf",
+    "after-regression.json": "c03a36ce2704c8c91a1b7f9fff7788f185534fb7ba710a73b88409b015c9af55",
+    "after-regression.log": "4c78d91fecebd9ff2601366b209fedef5a34c74b72f29aadd727b0d4e4957970",
+    "after-regression.xml": "50e059bf763f22a80175bc15e7779a45c0ee1db61f801adb99aa1251ba1fde20",
+    "after-target.json": "4b3cb15efc6a5dc965670af578f51f28200831fc4cf959dee6314b85c33aa82e",
+    "after-target.log": "4250d1f2029068ddc50a143f438d48c0e151e05c734fe713ffea94436ecf9381",
+    "after-target.xml": "2688ca9f915f6a4bbd238b20c121974842f744cf26627de9b662df2d32b7a3f6",
+    "before/pytest.ini": "b160d82f7811555051f8966d8e02750a985227c1d022208c784e606946f2eada",
+    "before/specs/appearance.md": "bd7672a17a912a60d55a85a99387d11856261c37ee1a7a6b420b7e5a32cb75e3",
+    "before/specs/filtering.md": "672e9165366975fdb4cd24890579361b41917037bb348d94b335deb42a69df7c",
+    "before/tasks.py": "7a8c5eb501390c108282d8bf2145221941918f3db232781a203666fa547cfbb8",
+    "before/tests/test_deadline.py": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+    "before/tests/test_regression.py": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf",
+    "before-regression.json": "4e77847e90a12666d11cd930f498568881c8d77f035bf691e787bfefceab3121",
+    "before-regression.log": "4c78d91fecebd9ff2601366b209fedef5a34c74b72f29aadd727b0d4e4957970",
+    "before-regression.xml": "4c0315e592521521478b7b9aa895fb8abeb03e44351f9a195f48a6a0c4aceef3",
+    "before-target.json": "b30408d082413eac64558ef744bc2c6d4e733d56e8529d2303b96f52ce622201",
+    "before-target.log": "abe7329dd17ba4139f17eb9f391a94cecf066f875f4a9fd6c987e189caff267e",
+    "before-target.xml": "44667239f7fca4ab735c2233a3d2097c838ac5aed6b54fb8d8f40e58a7b984d9",
+    "change.patch": "ababd7a3210bf8b02470504ac17e57fecc578b66ac2711a32957e08c25c1b2cf",
+    "context-after-restart.json": "82266ba18c4400a69a946308684c6c1149fb697bfca8f72842583c76b08d9a40",
+    "database-queries.json": "17df495c41fe48173bd73cc17bab3de5ef4f1a45b1e6fd3c3cd1b9096badf418",
+    "initial-import.json": "2d722e97ba4c223c2917114fd7afe6320bba1fe0768cede858f3c1e8080e13bf",
+    "initial-sources.json": "b1de870049588ee75167dffcd952b9ab7ab6c9e34ec307e7d333b63f422a1fb7",
+    "model/record.json": "df6f7901e19607c6e3ac1d4b5c00da67a759bce1006acd614cf704509127c21a",
+    "model/request.json": "aac6030e1145ab6f1b36797b828b991ede371b0f0ec8379703ee8ef5e20a7f47",
+    "report.json": "fc01c614885ff310cce4ff6ff1e78c42cdad3c3a68c72f8fc8b681e654704d81",
+    "restart-stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "state-write.json": "68821b57e988ece5bb81dbe2289e4540470ac1601eda56df4952e716ab37a4e2",
+    "updated-import.json": "35f7643bdacb9b4ae5eb833dd9c0c20446f8a9eeaf19c54667bd95c8ab5021e2"
+  }
+}
