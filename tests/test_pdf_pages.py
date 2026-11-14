@@ -222,3 +222,66 @@ async def test_multi_statement_question_retains_each_required_financial_statemen
             entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
             found.update(reference.source_id for reference in entry.sources)
         assert {source.name for source in sources[:2]} <= found
+
+
+async def test_financial_metrics_retrieve_all_components_without_losing_narrative_policy(tmp_path: Path) -> None:
+    registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+    income = "Consolidated Statement of Income\nNet earnings 90\nCost of sales 800\nRevenue 1000\nOperating profit 120"
+    balance = (
+        "Consolidated Balance Sheet\nCurrent assets 600\nCurrent liabilities 250\n"
+        "Total assets 2000\nInventories 180\nShareholders equity 1100"
+    )
+    cash = (
+        "Consolidated Statement of Cash Flows\nCash from operating activities 140\n"
+        "Capital spending 60\nDepreciation and amortization 35\nCash dividends paid 40"
+    )
+    policy = "Working capital policy\nWe manage current assets and current liabilities within group risk limits."
+    formula = (
+        "Financial metrics reference\nWorking capital is current assets less current liabilities. "
+        "Inventory turnover relates cost of sales and average inventories. "
+        "Return on assets compares net income and total assets."
+    )
+    noise = [
+        f"Note {i}: performance discussion\nWorking capital, return on assets, return on equity, "
+        "inventory turnover and asset turnover are management indicators."
+        for i in range(25)
+    ]
+    observations = []
+    target = []
+    for document_id in ("MERIDIAN_2025_ANNUAL", "MERIDIAN_2024_ANNUAL", "ORION_2025_ANNUAL"):
+        pages = parse_pdf_document(
+            PDFDocumentInput(
+                document_id=document_id, content=make_pdf([income, balance, cash, policy, formula, *noise])
+            )
+        )
+        for page in pages:
+            source = await registry.resolve(page)
+            observations.append(project_source_for_transport(registry, source))
+            if document_id == "MERIDIAN_2025_ANNUAL":
+                target.append(source.name)
+    config, scope_id, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, observations)
+    async with open_builtin_runtime(config) as runtime:
+        memory = runtime.memory.for_scope(scope_id)
+        for metric, required in [
+            ("working capital", [1]),
+            ("current ratio", [1]),
+            ("acid-test ratio", [1]),
+            ("return on assets", [0, 1]),
+            ("ROE", [0, 1]),
+            ("inventory turnover", [0, 1]),
+            ("asset turnover", [0, 1]),
+            ("EBITDA", [0, 2]),
+            ("free cash flow", [2]),
+            ("dividend payout ratio", [0, 2]),
+            ("net profit margin", [0]),
+        ]:
+            citations = await search_pdf_pages(memory, f"What was MERIDIAN FY2025 {metric}?", limit=2)
+            found = {
+                source.source_id
+                for citation in citations
+                for source in (await memory.get(GetMemoryEntryRequest(citation=citation))).entry.sources
+            }
+            assert {target[index] for index in required} <= found, metric
+        (citation,) = await search_pdf_pages(memory, "How does MERIDIAN manage working capital policy?", limit=1)
+        entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
+        assert {source.source_id for source in entry.sources} == {target[3]}

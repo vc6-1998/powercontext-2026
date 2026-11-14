@@ -305,7 +305,71 @@ def _stem(word: str) -> str:
     return word
 
 
-def _queries(question: str) -> tuple[list[str], dict[str, float], set[str]]:
+@dataclass(frozen=True)
+class _FinancialField:
+    phrases: tuple[str, ...]
+    statement: str
+
+
+_FINANCIAL_FIELDS = {
+    "current_assets": _FinancialField(("current assets",), "balance"),
+    "current_liabilities": _FinancialField(("current liabilities",), "balance"),
+    "assets": _FinancialField(("total assets",), "balance"),
+    "equity": _FinancialField(("total equity", "shareholders equity", "stockholders equity"), "balance"),
+    "inventory": _FinancialField(("inventories", "inventory"), "balance"),
+    "debt": _FinancialField(("total debt", "long term debt", "borrowings"), "balance"),
+    "net_income": _FinancialField(("net income", "net earnings", "net profit", "profit for the year"), "income"),
+    "operating_income": _FinancialField(("operating income", "operating profit"), "income"),
+    "revenue": _FinancialField(("net revenue", "net sales", "total revenue", "revenue", "sales"), "income"),
+    "gross_profit": _FinancialField(("gross profit",), "income"),
+    "cost_of_sales": _FinancialField(("cost of sales", "cost of goods sold", "cost of revenue", "cogs"), "income"),
+    "depreciation": _FinancialField(("depreciation", "depreciation expense"), "cash"),
+    "amortization": _FinancialField(("amortization", "amortisation"), "cash"),
+    "operating_cash": _FinancialField(
+        ("cash from operating activities", "net cash provided by operating activities", "operating cash flow"), "cash"
+    ),
+    "capex": _FinancialField(
+        ("capital expenditures", "capital spending", "purchases of property plant and equipment"), "cash"
+    ),
+    "dividends": _FinancialField(("cash dividends paid", "dividends paid"), "cash"),
+}
+# Metric names express dependencies on financial fields, never report-specific answers.
+_METRIC_FIELDS = tuple(
+    (re.compile(pattern), fields)
+    for pattern, fields in (
+        (r"\b(?:working capital|current ratio)\b", ("current_assets", "current_liabilities")),
+        (r"\b(?:quick ratio|acid test ratio)\b", ("current_assets", "inventory", "current_liabilities")),
+        (r"\b(?:return on (?:total )?assets|roa)\b", ("net_income", "assets")),
+        (r"\b(?:return on (?:shareholders |stockholders )?equity|roe)\b", ("net_income", "equity")),
+        (r"\binventor(?:y|ies) turnover\b", ("cost_of_sales", "inventory")),
+        (r"\b(?:total )?asset(?:s)? turnover\b", ("revenue", "assets")),
+        (r"\bgross (?:profit )?margin\b", ("gross_profit", "revenue")),
+        (r"\boperating (?:profit )?margin\b", ("operating_income", "revenue")),
+        (r"\bnet (?:profit |income )?margin\b", ("net_income", "revenue")),
+        (r"\bebitda\b", ("operating_income", "depreciation", "amortization")),
+        (r"\bebitda margin\b", ("revenue",)),
+        (r"\b(?:free cash flow|fcf)\b", ("operating_cash", "capex")),
+        (r"\b(?:dividend )?payout ratio\b", ("dividends", "net_income")),
+        (r"\bdebt (?:to )?equity\b", ("debt", "equity")),
+    )
+)
+
+
+def _financial_fields(question: str) -> tuple[_FinancialField, ...]:
+    normalized = " ".join(_tokens(question))
+    if re.search(r"\b(?:policies|policy|risks?|manage|management)\b", normalized) and not re.search(
+        r"\b(?:calculate|compute|amount|value|how much|how many)\b", normalized
+    ):
+        return ()
+    names = dict.fromkeys(name for pattern, fields in _METRIC_FIELDS if pattern.search(normalized) for name in fields)
+    # Explicit field requests also benefit from complete multi-page coverage.
+    for name, field in _FINANCIAL_FIELDS.items():
+        if any(len(_tokens(phrase)) > 1 and f" {phrase} " in f" {normalized} " for phrase in field.phrases):
+            names.setdefault(name, None)
+    return tuple(_FINANCIAL_FIELDS[name] for name in names)
+
+
+def _queries(question: str, fields: tuple[_FinancialField, ...] = ()) -> tuple[list[str], dict[str, float], set[str]]:
     normalized = re.sub(r"\bd\s*&\s*a\b", "depreciation amortization", question, flags=re.IGNORECASE)
     normalized = re.sub(r"\bp\s*&\s*l\b", "income statement", normalized, flags=re.IGNORECASE)
     terms = list(dict.fromkeys(term for term in _tokens(normalized) if term not in _STOP))
@@ -314,6 +378,13 @@ def _queries(question: str) -> tuple[list[str], dict[str, float], set[str]]:
     queries = [" ".join(terms)]
     weights = {_stem(term): (0.25 if term.isdigit() else 1.0) for term in terms}
     term_set = set(terms)
+    queries.extend(field.phrases[0] for field in fields)
+    for field in fields:
+        for phrase in field.phrases:
+            queries.append(phrase)
+            for word in _tokens(phrase):
+                term = _stem(word)
+                weights[term] = max(weights.get(term, 0.0), 0.75)
     for triggers, alternatives in _CONCEPTS:
         if triggers & term_set:
             for expansion in alternatives:
@@ -430,6 +501,56 @@ def _cover_requested_statements(ranked: list[_Candidate], query_terms: set[str])
     ]
 
 
+def _cover_financial_fields(
+    ranked: list[_Candidate], fields: tuple[_FinancialField, ...], query_terms: set[str]
+) -> list[_Candidate]:
+    if not fields:
+        return ranked
+    phrases = [
+        tuple(" " + " ".join(_stem(word) for word in _tokens(phrase)) + " " for phrase in field.phrases)
+        for field in fields
+    ]
+    coverage: list[set[int]] = []
+    numeric: list[set[int]] = []
+    titles: list[set[str]] = []
+    for candidate in ranked:
+        lines = candidate.text.partition("\n")[2].splitlines()
+        rows = [
+            (" " + " ".join(_stem(word) for word in _tokens(line)) + " ", bool(re.search(r"\d", line)))
+            for line in lines
+        ]
+        body = " " + " ".join(_stem(word) for word in _tokens(candidate.text.partition("\n")[2])) + " "
+        coverage.append({i for i, alternatives in enumerate(phrases) if any(p in body for p in alternatives)})
+        numeric.append({
+            i
+            for i, alternatives in enumerate(phrases)
+            if any(has_number and any(p in row for p in alternatives) for row, has_number in rows)
+        })
+        titles.append(_page_statements(candidate.text))
+    remaining = set(range(len(fields)))
+    selected: list[int] = []
+    while remaining:
+        eligible = [i for i in range(len(ranked)) if coverage[i] & remaining]
+        if not eligible:
+            break
+        # Prefer the requested issuer/year and numeric evidence. A short explanation
+        # of a formula must not displace the statements containing its actual inputs.
+        best = max(
+            eligible,
+            key=lambda i: (
+                *_document_affinity(ranked[i].text, query_terms),
+                len(numeric[i] & remaining),
+                len(coverage[i] & remaining),
+                len(titles[i] & {fields[j].statement for j in coverage[i] & remaining}),
+                -i,
+            ),
+        )
+        selected.append(best)
+        remaining.difference_update(coverage[best])
+    chosen = set(selected)
+    return [ranked[i] for i in selected] + [candidate for i, candidate in enumerate(ranked) if i not in chosen]
+
+
 async def _collect_page_candidates(memory: _PDFMemory, queries: list[str], limit: int) -> list[_Candidate]:
     """Read one active scope snapshot, then add lexical evidence to its real citations."""
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
@@ -472,11 +593,13 @@ async def search_pdf_pages(memory: _PDFMemory, question: str, limit: int = 10) -
 
     if limit <= 0 or not question.strip():
         return ()
-    queries, weights, question_terms = _queries(question)
+    fields = _financial_fields(question)
+    queries, weights, question_terms = _queries(question, fields)
     candidates = await _collect_page_candidates(memory, queries, limit)
     seen_pages: set[str] = set()
     selected: list[MemoryCitation] = []
-    for candidate in _cover_requested_statements(_rank_pages(candidates, weights, question_terms), question_terms):
+    ranked = _cover_requested_statements(_rank_pages(candidates, weights, question_terms), question_terms)
+    for candidate in _cover_financial_fields(ranked, fields, question_terms):
         record = (await memory.get(GetMemoryEntryRequest(citation=candidate.citation))).entry
         page_ids = {source.source_id for source in record.sources if source.source_type == "pdf-page"}
         if len(page_ids) != 1:
