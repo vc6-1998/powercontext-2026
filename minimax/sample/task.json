@@ -1,0 +1,10 @@
+{
+  "id": "deadline-inclusive",
+  "project": "taskboard",
+  "description": "Fix the task deadline filter: due_on_or_before must include tasks due exactly on the cutoff date. Preserve status filtering, original input order, limit handling, undated-task rules and non-mutating behavior. Follow the current specifications; do not modify tests.",
+  "query": "deadline due_on_or_before cutoff inclusive select_tasks status order limit",
+  "editable_files": ["tasks.py"],
+  "required_sources": ["specs/filtering.md", "tasks.py", "tests/test_deadline.py", "tests/test_regression.py"],
+  "target_tests": ["tests/test_deadline.py"],
+  "regression_tests": ["tests/test_regression.py"]
+}

@@ -1,0 +1,44 @@
+{
+  "command": [
+    "/home/vc6/oceanbase/powercontext-2026/competition/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-c",
+    "/home/vc6/oceanbase/powercontext-ecosystem-minimax/minimax/.runs/prepare-short-path/before/pytest.ini",
+    "--confcutdir",
+    "/home/vc6/oceanbase/powercontext-ecosystem-minimax/minimax/.runs/prepare-short-path/before",
+    "-p",
+    "no:cacheprovider",
+    "--junitxml=/home/vc6/oceanbase/powercontext-ecosystem-minimax/minimax/.runs/prepare-short-path/before-target.xml",
+    "tests/test_deadline.py"
+  ],
+  "exit_code": 1,
+  "source_sha256": {
+    "tasks.py": "7a8c5eb501390c108282d8bf2145221941918f3db232781a203666fa547cfbb8",
+    "tests/test_deadline.py": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+    "tests/test_regression.py": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+  },
+  "tests": 4,
+  "failures": 4,
+  "errors": 0,
+  "skipped": 0,
+  "failed_cases": [
+    {
+      "name": "test_deadline_includes_the_cutoff_date[2026-11-14]",
+      "message": "AssertionError: assert ['earlier'] == ['earlier', 'boundary']\n  \n  Right contains one more item: 'boundary'\n  Use -v to get more diff"
+    },
+    {
+      "name": "test_deadline_includes_the_cutoff_date[2024-02-29]",
+      "message": "AssertionError: assert ['earlier'] == ['earlier', 'boundary']\n  \n  Right contains one more item: 'boundary'\n  Use -v to get more diff"
+    },
+    {
+      "name": "test_deadline_includes_the_cutoff_date[2026-12-31]",
+      "message": "AssertionError: assert ['earlier'] == ['earlier', 'boundary']\n  \n  Right contains one more item: 'boundary'\n  Use -v to get more diff"
+    },
+    {
+      "name": "test_inclusive_deadline_combines_with_status_and_limit_in_original_order",
+      "message": "AssertionError: assert ['earlier'] == ['boundary']\n  \n  At index 0 diff: 'earlier' != 'boundary'\n  Use -v to get more diff"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "status": "awaiting_minimax",
+  "requirements": {
+    "runnable": "preparation_passed",
+    "minimax_actual_use": "pending",
+    "context_correct_and_updated": "passed",
+    "seekdb_actual_use": "passed",
+    "state_reused_after_restart": "passed",
+    "code_change_effective": "pending"
+  },
+  "official_submission_ready": false,
+  "state_directory": "/tmp/sdd-whgzlcux",
+  "baseline": {
+    "target_failures": 4,
+    "regression_tests": 10
+  }
+}

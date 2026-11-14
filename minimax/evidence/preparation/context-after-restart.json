@@ -1,0 +1,161 @@
+{
+  "task_id": "deadline-inclusive",
+  "project": "taskboard",
+  "task": "Fix the task deadline filter: due_on_or_before must include tasks due exactly on the cutoff date. Preserve status filtering, original input order, limit handling, undated-task rules and non-mutating behavior. Follow the current specifications; do not modify tests.",
+  "sources": [
+    {
+      "path": "specs/filtering.md",
+      "kind": "spec",
+      "sha256": "672e9165366975fdb4cd24890579361b41917037bb348d94b335deb42a69df7c",
+      "lines": [
+        1,
+        23
+      ],
+      "score": 8,
+      "content": "# Taskboard filtering specification — revision 2\n\n## FILTER-001: Deadline boundary\n`select_tasks(..., due_on_or_before=\"YYYY-MM-DD\")` returns tasks whose deadline\nis on or before the cutoff. The boundary is inclusive. A task due exactly on\nthe cutoff date must be included; a task due later must be excluded.\nParse calendar dates, not string prefixes. This also applies on leap days.\n\n## FILTER-002: Missing deadlines\nTasks with no deadline are excluded when a cutoff is supplied. Without a cutoff,\nundated tasks remain eligible. Invalid date values raise ValueError.\n\n## FILTER-003: Compatibility\n`status` is optional and accepts `open` or `done`; any other value raises ValueError.\n`limit` is optional and is applied after filtering. Zero means an empty result;\nnegative values, booleans and non-integers are rejected. Input records must not\nbe modified, and returned records must be independent shallow copies.\n\n## FILTER-004: Result ordering\nPreserve input order; do not sort the result by deadline.\n\n## FILTER-005: Compound filters\nApply the inclusive deadline and status filters before limit; an eligible task on the cutoff consumes a result slot.\n"
+    },
+    {
+      "path": "tasks.py",
+      "kind": "code",
+      "sha256": "7a8c5eb501390c108282d8bf2145221941918f3db232781a203666fa547cfbb8",
+      "lines": [
+        1,
+        23
+      ],
+      "score": 6,
+      "content": "\"\"\"Taskboard filtering library. Dates are ISO calendar dates (YYYY-MM-DD).\"\"\"\n\nfrom datetime import date\n\n\ndef select_tasks(tasks, *, status=None, due_on_or_before=None, limit=None):\n    \"\"\"Select tasks by status and deadline without changing the caller's data.\"\"\"\n    if status not in (None, \"open\", \"done\"):\n        raise ValueError(\"status must be open or done\")\n    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):\n        raise ValueError(\"limit must be a nonnegative integer\")\n    cutoff = date.fromisoformat(due_on_or_before) if due_on_or_before is not None else None\n    selected = []\n    for task in tasks:\n        if status is not None and task[\"status\"] != status:\n            continue\n        if cutoff is not None:\n            if task.get(\"due_date\") is None:\n                continue\n            if not date.fromisoformat(task[\"due_date\"]) < cutoff:\n                continue\n        selected.append(dict(task))\n    return selected if limit is None else selected[:limit]\n"
+    },
+    {
+      "path": "tests/test_deadline.py",
+      "kind": "test",
+      "sha256": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795",
+      "lines": [
+        1,
+        23
+      ],
+      "score": 8,
+      "content": "\"\"\"Target tests: the inclusive deadline boundary is the requested behavior.\"\"\"\nimport pytest\nfrom tasks import select_tasks\n\n\n@pytest.mark.parametrize(\"cutoff\", [\"2026-11-14\", \"2024-02-29\", \"2026-12-31\"])\ndef test_deadline_includes_the_cutoff_date(cutoff):\n    tasks = [\n        {\"id\": \"earlier\", \"status\": \"open\", \"due_date\": \"2024-01-01\"},\n        {\"id\": \"boundary\", \"status\": \"open\", \"due_date\": cutoff},\n        {\"id\": \"later\", \"status\": \"open\", \"due_date\": \"2027-01-01\"},\n        {\"id\": \"undated\", \"status\": \"open\", \"due_date\": None},\n    ]\n    assert [t[\"id\"] for t in select_tasks(tasks, due_on_or_before=cutoff)] == [\"earlier\", \"boundary\"]\n\n\ndef test_inclusive_deadline_combines_with_status_and_limit_in_original_order():\n    tasks = [\n        {\"id\": \"boundary\", \"status\": \"open\", \"due_date\": \"2026-11-14\"},\n        {\"id\": \"done\", \"status\": \"done\", \"due_date\": \"2026-11-13\"},\n        {\"id\": \"earlier\", \"status\": \"open\", \"due_date\": \"2026-11-12\"},\n    ]\n    assert [t[\"id\"] for t in select_tasks(tasks, status=\"open\", due_on_or_before=\"2026-11-14\", limit=1)] == [\"boundary\"]\n"
+    },
+    {
+      "path": "tests/test_regression.py",
+      "kind": "test",
+      "sha256": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf",
+      "lines": [
+        1,
+        44
+      ],
+      "score": 7,
+      "content": "\"\"\"Existing status, order, limit, validation and non-mutating behavior.\"\"\"\nfrom copy import deepcopy\nimport pytest\nfrom tasks import select_tasks\n\n\n@pytest.fixture\ndef tasks():\n    return [\n        {\"id\": \"b\", \"status\": \"open\", \"due_date\": \"2026-11-12\"},\n        {\"id\": \"a\", \"status\": \"done\", \"due_date\": \"2026-11-10\"},\n        {\"id\": \"c\", \"status\": \"open\", \"due_date\": None},\n    ]\n\n\ndef test_status_and_original_order(tasks):\n    assert [t[\"id\"] for t in select_tasks(tasks, status=\"open\")] == [\"b\", \"c\"]\n\n\ndef test_missing_deadline_with_and_without_cutoff(tasks):\n    assert len(select_tasks(tasks)) == 3\n    assert [t[\"id\"] for t in select_tasks(tasks, due_on_or_before=\"2026-11-13\")] == [\"b\", \"a\"]\n\n\ndef test_limit_applies_after_status_filter(tasks):\n    assert select_tasks(tasks, limit=0) == []\n    assert [t[\"id\"] for t in select_tasks(tasks, status=\"done\", limit=1)] == [\"a\"]\n\n\ndef test_selection_does_not_modify_input_or_alias_records(tasks):\n    before = deepcopy(tasks)\n    selected = select_tasks(tasks)\n    selected[0][\"id\"] = \"changed\"\n    assert tasks == before\n\n\n@pytest.mark.parametrize(\"kwargs\", [{\"limit\": -1}, {\"limit\": True}, {\"limit\": 1.5}, {\"status\": \"bad\"}, {\"due_on_or_before\": \"2026-02-30\"}])\ndef test_invalid_filter_arguments(tasks, kwargs):\n    with pytest.raises(ValueError):\n        select_tasks(tasks, **kwargs)\n\n\ndef test_empty_collection():\n    assert select_tasks([], status=\"open\", due_on_or_before=\"2026-11-14\") == []\n"
+    }
+  ],
+  "progress": {
+    "scope_id": "scp_7qq21ts2qhsgv476y9kqdtk2wn",
+    "state": {
+      "done": [
+        "Imported engineering sources",
+        "Updated specifications to revision 2",
+        "Verified baseline functional failure and passing regressions"
+      ],
+      "project": "taskboard",
+      "task_id": "deadline-inclusive",
+      "todo": [
+        "Ask MiniMax to fix tasks.py",
+        "Run unchanged target and regression tests"
+      ],
+      "validation": {
+        "regression_exit_code": 0,
+        "target_exit_code": 1
+      }
+    },
+    "citation": {
+      "memory_ref": {
+        "family": "memory",
+        "artifact_id": "memory",
+        "revision": 1
+      },
+      "entry_id": "mem_ent_bb1e214be279404d856bbe136bc05e85",
+      "entry_version_id": "mem_ver_5e05fc5f5cdc4b0082f5090c8b47b17c"
+    }
+  },
+  "next_actions": [
+    "Ask MiniMax to fix tasks.py",
+    "Run unchanged target and regression tests"
+  ],
+  "database": {
+    "engine": "seekdb",
+    "version": "5.7.25-OceanBase seekdb-v1.3.0.0",
+    "queries": [
+      {
+        "sql": "SELECT path,kind,revision,content,(CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END) AS score FROM sdd_documents WHERE project=%s AND kind=%s HAVING score>0 ORDER BY score DESC,path LIMIT %s",
+        "parameters": [
+          "%deadline%",
+          "%due!_on!_or!_before%",
+          "%cutoff%",
+          "%inclusive%",
+          "%select!_tasks%",
+          "%status%",
+          "%order%",
+          "%limit%",
+          "taskboard",
+          "spec",
+          4
+        ],
+        "returned": [
+          {
+            "path": "specs/filtering.md",
+            "sha256": "672e9165366975fdb4cd24890579361b41917037bb348d94b335deb42a69df7c"
+          }
+        ]
+      },
+      {
+        "sql": "SELECT path,kind,revision,content,(CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END) AS score FROM sdd_documents WHERE project=%s AND kind=%s HAVING score>0 ORDER BY score DESC,path LIMIT %s",
+        "parameters": [
+          "%deadline%",
+          "%due!_on!_or!_before%",
+          "%cutoff%",
+          "%inclusive%",
+          "%select!_tasks%",
+          "%status%",
+          "%order%",
+          "%limit%",
+          "taskboard",
+          "code",
+          4
+        ],
+        "returned": [
+          {
+            "path": "tasks.py",
+            "sha256": "7a8c5eb501390c108282d8bf2145221941918f3db232781a203666fa547cfbb8"
+          }
+        ]
+      },
+      {
+        "sql": "SELECT path,kind,revision,content,(CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END+CASE WHEN LOWER(content) LIKE %s ESCAPE '!' THEN 1 ELSE 0 END) AS score FROM sdd_documents WHERE project=%s AND kind=%s HAVING score>0 ORDER BY score DESC,path LIMIT %s",
+        "parameters": [
+          "%deadline%",
+          "%due!_on!_or!_before%",
+          "%cutoff%",
+          "%inclusive%",
+          "%select!_tasks%",
+          "%status%",
+          "%order%",
+          "%limit%",
+          "taskboard",
+          "test",
+          4
+        ],
+        "returned": [
+          {
+            "path": "tests/test_deadline.py",
+            "sha256": "d1bb4186e032b20dd19b311540fcb413a99503bab193880def3293d0c5251795"
+          },
+          {
+            "path": "tests/test_regression.py",
+            "sha256": "75b42a3dab88c1c3c79a46818572ec89f5ddb676da5281370ec66d4203932aaf"
+          }
+        ]
+      }
+    ]
+  },
+  "process_id": 751
+}
