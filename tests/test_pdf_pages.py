@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, IndirectObject, NameObject, NumberObject
 
 from competition.selftest_support.source_acceptance import persist
 from powercontext.builtin.runtime import GetMemoryEntryRequest, open_builtin_runtime
@@ -323,3 +323,161 @@ def test_individually_positioned_letters_preserve_words_columns_and_line_breaks(
     writer.write(output)
     (captured,) = parse_pdf_document(PDFDocumentInput(document_id="text-runs", content=output.getvalue()))
     assert captured.text.splitlines() == ([paragraph] if paragraph else []) + ["NET INCOME 56", "TOTAL ASSETS 92"]
+
+
+@pytest.mark.parametrize("blank", [True, False])
+def test_null_font_cannot_hide_meaningful_text(blank: bool) -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["Visible revenue 42"])))
+    page = writer.pages[0]
+    resources = page["/Resources"]
+    assert isinstance(resources, DictionaryObject)
+    fonts = resources["/Font"]
+    assert isinstance(fonts, DictionaryObject)
+    fonts[NameObject("/NullFont")] = IndirectObject(0, 0, writer)
+    stream = DecodedStreamObject()
+    glyphs = b" " if blank else b"Hidden revenue 99"
+    contents = page.get_contents()
+    assert contents is not None
+    stream.set_data(contents.get_data() + b" BT /NullFont 10 Tf (" + glyphs + b") Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    value = PDFDocumentInput(document_id="font-resource", content=output.getvalue())
+    if blank:
+        assert parse_pdf_document(value)[0].text.strip() == "Visible revenue 42"
+    else:
+        with pytest.raises(ValueError):
+            parse_pdf_document(value)
+
+
+def test_two_long_text_fragments_form_one_word_without_a_global_short_word_trigger() -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["Long paragraph containing ordinary words. " * 20])))
+    page = writer.pages[0]
+    resources = page["/Resources"]
+    assert isinstance(resources, DictionaryObject)
+    fonts = resources["/Font"]
+    assert isinstance(fonts, DictionaryObject)
+    fonts[NameObject("/Mono")] = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Courier"),
+    })
+    stream = DecodedStreamObject()
+    contents = page.get_contents()
+    assert contents is not None
+    stream.set_data(
+        contents.get_data() + b" q 1 0 0 1 20 700 cm BT /Mono 10 Tf (attributab) Tj ET Q"
+        b" q 1 0 0 1 80.1 700 cm BT /Mono 10 Tf (le) Tj ET Q"
+    )
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    text = parse_pdf_document(PDFDocumentInput(document_id="fragmented", content=output.getvalue()))[0].text
+    assert text.endswith("attributable")
+
+
+def test_mapped_separators_do_not_create_rows_inside_a_painted_text_run() -> None:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=600, height=800)
+    text = "Net\nincome\u00a0Debt service 42"
+    chars = list(dict.fromkeys(text))
+    cmap = DecodedStreamObject()
+    mappings = "\n".join(f"<{i:04x}> <{ord(char):04x}>" for i, char in enumerate(chars, 1))
+    cmap.set_data(
+        (
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+            "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n"
+            "/CMapName /Identity-UCS def /CMapType 2 def\n1 begincodespacerange <0000> <ffff> endcodespacerange\n"
+            f"{len(chars)} beginbfchar\n{mappings}\nendbfchar\nendcmap end end"
+        ).encode("ascii")
+    )
+    descendant = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/CIDFontType2"),
+        NameObject("/BaseFont"): NameObject("/Courier"),
+        NameObject("/DW"): NumberObject(600),
+    })
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type0"),
+        NameObject("/BaseFont"): NameObject("/Courier"),
+        NameObject("/Encoding"): NameObject("/Identity-H"),
+        NameObject("/DescendantFonts"): ArrayObject([descendant]),
+        NameObject("/ToUnicode"): writer._add_object(cmap),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})
+    })
+    encoded = "".join(f"{chars.index(char) + 1:04x}" for char in text)
+    stream = DecodedStreamObject()
+    stream.set_data(f"BT /F1 10 Tf 20 700 Td <{encoded}> Tj ET".encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    captured = parse_pdf_document(PDFDocumentInput(document_id="mapped", content=output.getvalue()))[0].text
+    assert captured == "NetincomeDebt service 42"
+
+
+async def test_wrapped_titles_issuer_aliases_and_capital_intensity(tmp_path: Path) -> None:
+    registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+    observations = []
+    identities = {}
+    for document, issuer, ticker in [
+        ("NORTH_STAR_2025_ANNUAL", "North Star", "NST"),
+        ("CEDAR_2025_ANNUAL", "Cedar", "CDR"),
+    ]:
+        texts = [
+            f"{issuer} corporate overview. NYSE: {ticker}",
+            f"Table of Contents\n{issuer} Consolidated Statements of\nOperations\nRevenue 1000\nCost of sales 700\nOperating profit 150",
+            f"Table\nof\nContents\n{issuer}\nConsolidated Balance Sheet\nProperty plant and equipment 900\nAccounts payable 80\nInventories 60",
+            f"{issuer}\nConsolidated Statement of Cash Flows\nPurchases of property plant and equipment 80\nDepreciation 60",
+            *[
+                f"Note {i}: operating metrics\nCapital intensive business, DPO and operating margin are measures of performance."
+                for i in range(25)
+            ],
+            *[
+                "The following table presents amounts in the Consolidated Statement of Income and Consolidated Balance Sheets.\n"
+                "Revenue 2000\nProperty plant and equipment 1500\nCapital expenditures 90\nCost of sales 50\nAccounts payable 20"
+                for _ in range(10)
+            ],
+        ]
+        for page in parse_pdf_document(PDFDocumentInput(document_id=document, content=make_pdf(texts))):
+            source = await registry.resolve(page)
+            identities[source.name] = (document, page.page_number)
+            observations.append(project_source_for_transport(registry, source))
+    config, scope, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, observations)
+    async with open_builtin_runtime(config) as runtime:
+        memory = runtime.memory.for_scope(scope)
+        for question, document, pages in [
+            ("What was North Star FY2025 operating margin?", "NORTH_STAR_2025_ANNUAL", {2}),
+            ("Is NnS capital intensive in FY2025?", "NORTH_STAR_2025_ANNUAL", {2, 3, 4}),
+            ("What was CDR FY2025 DPO?", "CEDAR_2025_ANNUAL", {2, 3}),
+        ]:
+            citations = await search_pdf_pages(memory, question, limit=len(pages))
+            found = {
+                identities[source.source_id]
+                for citation in citations
+                for source in (await memory.get(GetMemoryEntryRequest(citation=citation))).entry.sources
+            }
+            assert {(document, page) for page in pages} == found, question
+
+
+async def test_specific_query_term_can_outweigh_common_terms_on_short_pages(tmp_path: Path) -> None:
+    texts = [
+        "Forensic compliance controls. " + "Regional employee training records and annual scheduling details. " * 6,
+        *[
+            "Compliance controls overview. Regional employee training records and annual scheduling details."
+            for _ in range(24)
+        ],
+        *["Unrelated telecommunications administration. " * 6 for _ in range(24)],
+    ]
+    registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+    observations = []
+    for page in parse_pdf_document(PDFDocumentInput(document_id="CEDAR_2025", content=make_pdf(texts))):
+        observations.append(project_source_for_transport(registry, await registry.resolve(page)))
+    config, scope, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, observations)
+    async with open_builtin_runtime(config) as runtime:
+        memory = runtime.memory.for_scope(scope)
+        (citation,) = await search_pdf_pages(memory, "CEDAR forensic compliance controls in FY2025", limit=1)
+        entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
+        assert {source.source_id for source in entry.sources} == {observations[0].name}

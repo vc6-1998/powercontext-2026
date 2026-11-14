@@ -73,18 +73,70 @@ class PDFPageInput(BaseModel):
         return PDFDocumentInput.require_document_id(value)
 
 
+def _without_blank_missing_fonts(page: PageObject) -> PageObject:  # noqa: C901
+    """Ignore null font entries only when they cannot hide any text glyphs."""
+    from copy import copy
+
+    from pypdf.generic import (
+        ArrayObject,
+        ByteStringObject,
+        ContentStream,
+        DictionaryObject,
+        IndirectObject,
+        NameObject,
+        NullObject,
+    )
+
+    resources = page.get("/Resources")
+    if resources is None:
+        return page
+    resources = resources.get_object()
+    fonts = resources.get("/Font")
+    if fonts is None:
+        return page
+    fonts = fonts.get_object()
+    missing = {
+        name
+        for name, reference in fonts.items()
+        if isinstance(reference, NullObject) or (isinstance(reference, IndirectObject) and reference.idnum == 0)
+    }
+    if not missing:
+        return page
+    content = page.get_contents()
+    operations = []
+    current_font = None
+    font_stack = []
+    for operands, operator in content.operations if content is not None else ():
+        if operator == b"q":
+            font_stack.append(current_font)
+        elif operator == b"Q" and font_stack:
+            current_font = font_stack.pop()
+        elif operator == b"Tf":
+            current_font = operands[0]
+            if current_font in missing:
+                continue
+        if current_font in missing and operator in (b"Tj", b"TJ", b"'", b'"'):
+            values = operands[-1] if operator == b"TJ" else operands[-1:]
+            if any(isinstance(value, (str, bytes)) and value.strip() for value in values):
+                raise ValueError("PDF text uses a missing font")  # noqa: TRY003
+            # Keep quote-operator positioning and text-state effects, but no glyphs.
+            operands = [*operands[:-1], ArrayObject() if operator == b"TJ" else ByteStringObject(b"")]
+        operations.append((operands, operator))
+    cleaned = copy(page)
+    clean_resources = DictionaryObject(resources)
+    clean_resources[NameObject("/Font")] = DictionaryObject({k: v for k, v in fonts.items() if k not in missing})
+    cleaned[NameObject("/Resources")] = clean_resources
+    stream = ContentStream(None, page.pdf)
+    stream.operations = operations
+    cleaned[NameObject("/Contents")] = stream
+    return cleaned
+
+
 def _extract_page_text(page: PageObject) -> str:
     """Join independently positioned text runs using their painted start and end coordinates."""
+    page = _without_blank_missing_fonts(page)
     plain = page.extract_text() or ""
-    # Normal paragraphs and tables already extract intact. A sequence of short
-    # words on separate lines, or many isolated letters, warrants inspecting placement.
-    words = plain.split()
-    if not words:
-        return plain
-    short_lines = re.findall(r"(?m)^[ \t]*[a-zA-Z]{1,3}[ \t]*$", plain)
-    singles = sum(len(word) == 1 and word.isalpha() for word in words)
-    consecutive_fragments = re.search(r"(?m)(?:^[ \t]*[A-Za-z]{1,3}[ \t]*\n){3}|(?:\b[A-Za-z]\b[ \t]+){3}", plain)
-    if consecutive_fragments is None and max(len(short_lines), singles) < max(3, len(words) / 4):
+    if not plain.strip():
         return plain
 
     from pypdf._text_extraction._layout_mode._fixed_width_page import recurse_to_target_op
@@ -107,6 +159,7 @@ def _extract_page_text(page: PageObject) -> str:
         return plain
     parts: list[str] = []
     previous = None
+    mapped_separators: dict[int, dict[int, None]] = {}
     for run in runs:
         if not run.text:
             continue
@@ -119,7 +172,19 @@ def _extract_page_text(page: PageObject) -> str:
             and abs(previous.ty - run.ty) <= 0.12 * min(previous.font_height, run.font_height)
         ):
             sep = " " if run.tx - previous.displaced_tx > 0.13 * run.font_height else ""
-        parts.extend((sep, run.text))
+        font_key = id(run.font)
+        if font_key not in mapped_separators:
+            # Embedded CMaps may decode glyphs to non-printing separators within
+            # a single painted run. Physical line/column breaks come from geometry;
+            # ordinary spaces and literal newlines in simple-font text stay intact.
+            mapped_separators[font_key] = {
+                ord(char): None
+                for value in run.font.character_map.values()
+                if isinstance(value, str)
+                for char in ("\n", "\u00a0")
+                if char in value
+            }
+        parts.extend((sep, run.text.translate(mapped_separators[font_key])))
         previous = run
     result = "".join(parts).strip()
     # Embedded forms may be absent from the layout stream. Accept changes to
@@ -307,6 +372,26 @@ _STOP = frozenset([
     "millions",
     "fy",
     "state",
+    "based",
+    "data",
+    "financial",
+    "metric",
+    "metrics",
+    "units",
+    "percents",
+    "percent",
+    "round",
+    "decimal",
+    "place",
+    "places",
+    "year",
+    "years",
+    "historically",
+    "roughly",
+    "main",
+    "primary",
+    "much",
+    "many",
 ])
 # General financial vocabulary, independent of any issuer, report, question or page label.
 _CONCEPTS = (
@@ -321,9 +406,8 @@ _CONCEPTS = (
             "region",
             "regions",
             "operates",
-            "operations",
         ]),
-        ("geographic segments", "countries markets", "international domestic"),
+        ("geographic operations", "geographic segments", "countries markets", "international domestic"),
     ),
     (
         frozenset(["legal", "litigation", "lawsuit", "lawsuits", "battles", "proceedings"]),
@@ -343,6 +427,9 @@ _CONCEPTS = (
     (frozenset(["debt", "borrowings", "leverage"]), ("debt borrowings", "interest obligations")),
     (frozenset(["dividends", "repurchases", "shareholders", "shareholder"]), ("dividends repurchases",)),
     (frozenset(["inventory", "inventories", "turnover"]), ("inventories inventory",)),
+    (frozenset(["acquire", "acquired", "acquisition", "acquisitions"]), ("acquisitions", "business combinations")),
+    (frozenset(["categories", "segments", "segment"]), ("business segment revenues", "reportable segments")),
+    (frozenset(["retain", "retained", "retention"]), ("retention", "attrition", "customer loyalty")),
 )
 
 
@@ -351,14 +438,22 @@ def _tokens(value: str) -> list[str]:
 
 
 def _stem(word: str) -> str:
+    if word in {"geography", "geographies", "geographic", "geographical"}:
+        return "geograph"
+    if word in {"acquire", "acquired", "acquiring", "acquisition", "acquisitions"}:
+        return "acquir"
+    if word in {"operate", "operates", "operating", "operation", "operations"}:
+        return "operat"
+    if word in {"retain", "retained", "retaining", "retention"}:
+        return "retain"
     if len(word) > 4 and word.endswith("ies"):
         return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
     if len(word) > 5 and word.endswith("ing"):
         return word[:-3]
     if len(word) > 4 and word.endswith("ed"):
         return word[:-2]
-    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
-        return word[:-1]
     return word
 
 
@@ -380,7 +475,15 @@ _FINANCIAL_FIELDS = {
     "revenue": _FinancialField(("net revenue", "net sales", "total revenue", "revenue", "sales"), "income"),
     "gross_profit": _FinancialField(("gross profit",), "income"),
     "cost_of_sales": _FinancialField(
-        ("cost of sales", "cost of goods sold", "cost of revenue", "merchandise costs", "cogs"), "income"
+        (
+            "cost of sales",
+            "cost of goods sold",
+            "cost of products sold",
+            "cost of revenue",
+            "merchandise costs",
+            "cogs",
+        ),
+        "income",
     ),
     "depreciation": _FinancialField(("depreciation", "depreciation expense"), "cash"),
     "amortization": _FinancialField(("amortization", "amortisation"), "cash"),
@@ -391,6 +494,10 @@ _FINANCIAL_FIELDS = {
         ("capital expenditures", "capital spending", "purchases of property plant and equipment"), "cash"
     ),
     "dividends": _FinancialField(("cash dividends paid", "dividends paid"), "cash"),
+    "payables": _FinancialField(("accounts payable", "trade payables"), "balance"),
+    "ppe": _FinancialField(("property plant and equipment", "property and equipment", "ppne"), "balance"),
+    "pretax": _FinancialField(("income before income taxes", "earnings before provision for taxes"), "income"),
+    "tax": _FinancialField(("income tax expense", "income tax provision", "provision for income taxes"), "income"),
 }
 # Metric names express dependencies on financial fields, never report-specific answers.
 _METRIC_FIELDS = tuple(
@@ -410,6 +517,10 @@ _METRIC_FIELDS = tuple(
         (r"\b(?:free cash flow|fcf)\b", ("operating_cash", "capex")),
         (r"\b(?:dividend )?payout ratio\b", ("dividends", "net_income")),
         (r"\bdebt (?:to )?equity\b", ("debt", "equity")),
+        (r"\b(?:days payable outstanding|dpo)\b", ("payables", "cost_of_sales", "inventory")),
+        (r"\b(?:capital intensive|capital intensity)\b", ("ppe", "revenue", "capex")),
+        (r"\b(?:ppne|ppe)\b", ("ppe",)),
+        (r"\beffective tax rate\b", ("pretax", "tax")),
     )
 )
 
@@ -437,6 +548,9 @@ def _queries(question: str, fields: tuple[_FinancialField, ...] = ()) -> tuple[l
     queries = [" ".join(terms)]
     weights = {_stem(term): (0.25 if term.isdigit() else 1.0) for term in terms}
     term_set = set(terms)
+    # Document IDs often join words that are separated in natural-language names.
+    name_words = re.findall(r"[a-z0-9]+", re.sub(r"['\u2019]s\b", "", normalized.casefold()))
+    term_set.update("".join(name_words[i : i + n]) for n in (1, 2, 3) for i in range(len(name_words) - n + 1))
     queries.extend(field.phrases[0] for field in fields)
     for field in fields:
         for phrase in field.phrases:
@@ -449,7 +563,7 @@ def _queries(question: str, fields: tuple[_FinancialField, ...] = ()) -> tuple[l
             for expansion in alternatives:
                 queries.append(expansion)
                 for word in _tokens(expansion):
-                    weights.setdefault(_stem(word), 0.5)
+                    weights.setdefault(_stem(word), 0.75)
     # Short independent probes also survive Memory's lexical-coverage admission floor.
     queries.extend(" ".join(terms[index : index + 2]) for index in range(0, min(len(terms), 8), 2))
     return list(dict.fromkeys(queries))[:16], weights, term_set
@@ -462,22 +576,63 @@ class _Candidate:
     rank_score: float = 0.0
 
 
+def _document_names(text: str) -> set[str]:
+    prefix = re.split(r"(?:19|20)\d{2}", text.partition("\n")[0].casefold(), maxsplit=1)[0]
+    words = re.findall(r"[a-z0-9]+", prefix)
+    return {"".join(words), *words} - {"", "annual", "report", "form", "financial", "inc", "corp", "company"}
+
+
+def _resolve_issuer_terms(candidates: list[_Candidate], terms: set[str]) -> set[str]:
+    resolved = set(terms)
+    for candidate in candidates:
+        prefix = re.split(r"(?:19|20)\d{2}", candidate.text.partition("\n")[0].casefold(), maxsplit=1)[0]
+        words = re.findall(r"[a-z0-9]+", prefix)
+        aliases = set(re.findall(r"\b(?:NYSE|NASDAQ|Nasdaq)\s*:\s*([A-Z][A-Z0-9.]{0,6})\b", candidate.text[:1200]))
+        if len(words) > 1:
+            initials = [word[0] for word in words]
+            aliases.update(("".join(initials), "n".join(initials)))
+        if {alias.casefold() for alias in aliases} & terms:
+            resolved.update(_document_names(candidate.text))
+    return resolved
+
+
 def _document_affinity(text: str, query_terms: set[str]) -> tuple[bool, bool]:
-    document_words = set(_tokens(text.partition("\n")[0]))
-    names = {
-        word
-        for word in document_words
-        if not word.isdigit()
-        and word not in {"k", "q", "annual", "report", "form", "financial", "inc", "corp", "company"}
-    }
+    names = _document_names(text)
+    document_years = set(re.findall(r"(?:19|20)\d{2}", text.partition("\n")[0]))
     years = {word for word in query_terms if re.fullmatch(r"(?:19|20)\d{2}", word)}
-    return bool(names & query_terms), bool(document_words & years)
+    return bool(names & query_terms), bool(document_years & years)
 
 
-def _rank_pages(candidates: list[_Candidate], weights: dict[str, float], query_terms: set[str]) -> list[_Candidate]:
+def _rank_pages(
+    candidates: list[_Candidate], weights: dict[str, float], query_terms: set[str], question: str = ""
+) -> list[_Candidate]:
+    issuer_words = {
+        _stem(word)
+        for candidate in candidates
+        if _document_affinity(candidate.text, query_terms)[0]
+        for name in _document_names(candidate.text)
+        for word in _tokens(name)
+    }
+    weights = {term: weight for term, weight in weights.items() if term not in issuer_words and not term.isdigit()}
     counts = [Counter(_stem(token) for token in _tokens(candidate.text)) for candidate in candidates]
+    # Some embedded-font text preserves adjacent words as one token. Search can
+    # still recognize a long compound's query terms without changing stored text.
+    for row in counts:
+        compounds = [(token, frequency) for token, frequency in row.items() if len(token) >= 12 and token.isalpha()]
+        for term in weights:
+            if len(term) >= 4 and term not in row:
+                matches = sum(frequency * token.count(term) for token, frequency in compounds)
+                if matches:
+                    row[term] = matches
     document_frequency: Counter[str] = Counter(term for row in counts for term in row)
     average_length = sum(sum(row.values()) for row in counts) / max(len(counts), 1)
+    words = [_stem(word) for word in _tokens(question)]
+    phrases = {
+        tuple(words[index : index + size])
+        for size in (2, 3)
+        for index in range(len(words) - size + 1)
+        if all(word in weights for word in words[index : index + size])
+    }
     scored: list[tuple[float, _Candidate]] = []
     for candidate, terms in zip(candidates, counts, strict=True):
         length = sum(terms.values())
@@ -490,20 +645,28 @@ def _rank_pages(candidates: list[_Candidate], weights: dict[str, float], query_t
                 )
                 norm = frequency + 1.2 * (0.35 + 0.65 * length / max(average_length, 1.0))
                 score += weight * inverse_frequency * frequency * 2.2 / norm
+        # A short numeric row naming the requested measure is stronger evidence
+        # than incidental mentions spread across narrative text or a contents list.
+        rows = [
+            " " + " ".join(_stem(word) for word in _tokens(line)) + " "
+            for line in candidate.text.partition("\n")[2].splitlines()
+            if len(line) <= 200 and len(re.findall(r"\d+", line)) >= 2
+        ]
+        phrase_scores = [
+            sum(
+                weights[word]
+                * math.log1p((len(counts) - document_frequency[word] + 0.5) / (document_frequency[word] + 0.5))
+                for word in phrase
+            )
+            for phrase in phrases
+            if any(" " + " ".join(phrase) + " " in row for row in rows)
+        ]
+        score += max(phrase_scores, default=0.0)
         issuer_match, year_match = _document_affinity(candidate.text, query_terms)
         score += 2.0 * issuer_match + 0.75 * year_match
         scored.append((score, candidate))
     scored.sort(key=lambda item: (-item[0], item[1].citation.entry_id, item[1].citation.entry_version_id))
     return [candidate for _, candidate in scored]
-
-
-_STATEMENT_TITLES = {
-    "income": re.compile(r"^(?:statements? of (?:income|operations|earnings)|income statements?|profit and loss)\b"),
-    "cash": re.compile(r"^statements? of cash flows?\b"),
-    "balance": re.compile(r"^(?:balance sheets?|statements? of financial position)\b"),
-    "equity": re.compile(r"^statements? of (?:changes in )?(?:(?:shareholders|stockholders)'? )?equity\b"),
-}
-_TITLE_MODIFIERS = re.compile(r"^(?:(?:condensed|consolidated|combined|unaudited|audited|group|interim)\s+)+")
 
 
 def _requested_statements(query_terms: set[str]) -> set[str]:
@@ -523,14 +686,47 @@ def _requested_statements(query_terms: set[str]) -> set[str]:
 def _page_statements(text: str) -> set[str]:
     # Read titles near the page start, rather than incidental mentions in notes.
     # TOC entries ending in a page number are not financial statements themselves.
-    headings = [" ".join(line.casefold().split()) for line in text.partition("\n")[2].splitlines() if line.strip()][:4]
-    return {
-        kind
-        for line in headings
-        if len(line) <= 160 and not re.search(r"\d\s*$", line)
-        for kind, pattern in _STATEMENT_TITLES.items()
-        if pattern.match(_TITLE_MODIFIERS.sub("", line))
+    headings = [" ".join(line.casefold().split()) for line in text.partition("\n")[2].splitlines() if line.strip()][:8]
+    if any(re.match(r"(?:note\s*\d|notes\s+to\b)", line) for line in headings[:4]):
+        return set()
+    patterns = {
+        "income": r"(?:statementsof|statementof)(?:income|operations|earnings)|incomestatements?|profitandloss",
+        "cash": r"statements?ofcashflows?",
+        "balance": r"balancesheets?|statements?offinancialposition",
+        "equity": r"statements?of(?:changesin)?(?:(?:shareholders|stockholders))?equity",
     }
+    prefixes = {
+        "consolidated",
+        "condensed",
+        "combined",
+        "unaudited",
+        "audited",
+        "group",
+        "interim",
+        "the",
+        "company",
+        "corporation",
+        "incorporated",
+        "inc",
+        "corp",
+        "co",
+        "and",
+        "subsidiaries",
+        "plc",
+        "ltd",
+        *(re.sub(r"[^a-z]", "", name) for name in _document_names(text)),
+    } - {""}
+    prefix = "(?:" + "|".join(re.escape(word) for word in sorted(prefixes, key=len, reverse=True)) + ")*"
+    captions = {kind: re.compile("^" + prefix + "(?:" + pattern + ")") for kind, pattern in patterns.items()}
+    found = set()
+    for index in range(len(headings)):
+        for count in (1, 2, 3):
+            line = " ".join(headings[index : index + count])
+            if len(line) > 180 or re.search(r"\d\s*$", line):
+                continue
+            compact = re.sub(r"[^a-z]", "", line)
+            found.update(kind for kind, pattern in captions.items() if pattern.match(compact))
+    return found
 
 
 def _cover_requested_statements(ranked: list[_Candidate], query_terms: set[str]) -> list[_Candidate]:
@@ -579,17 +775,36 @@ def _cover_financial_fields(
             for line in lines
         ]
         body = " " + " ".join(_stem(word) for word in _tokens(candidate.text.partition("\n")[2])) + " "
-        coverage.append({i for i, alternatives in enumerate(phrases) if any(p in body for p in alternatives)})
+        compact_body = body.replace(" ", "")
+        coverage.append({
+            i
+            for i, alternatives in enumerate(phrases)
+            if any(p in body or p.replace(" ", "") in compact_body for p in alternatives)
+        })
         numeric.append({
             i
             for i, alternatives in enumerate(phrases)
             if any(has_number and any(p in row for p in alternatives) for row, has_number in rows)
         })
         titles.append(_page_statements(candidate.text))
+    preferred_affinity = max((_document_affinity(row.text, query_terms) for row in ranked), default=(False, False))
+    statement_fields = {
+        field
+        for index, row in enumerate(ranked)
+        if _document_affinity(row.text, query_terms) == preferred_affinity
+        for field in coverage[index]
+        if fields[field].statement in titles[index]
+    }
+    # A cash-flow line about purchases of equipment does not also satisfy the
+    # balance-sheet equipment balance when that statement is available.
+    effective_coverage = [
+        {field for field in covered if field not in statement_fields or fields[field].statement in titles[index]}
+        for index, covered in enumerate(coverage)
+    ]
     remaining = set(range(len(fields)))
     selected: list[int] = []
     while remaining:
-        eligible = [i for i in range(len(ranked)) if coverage[i] & remaining]
+        eligible = [i for i in range(len(ranked)) if effective_coverage[i] & remaining]
         if not eligible:
             break
         # Prefer the requested issuer/year and numeric evidence. A short explanation
@@ -598,14 +813,14 @@ def _cover_financial_fields(
             eligible,
             key=lambda i: (
                 *_document_affinity(ranked[i].text, query_terms),
-                len(numeric[i] & remaining),
-                len(coverage[i] & remaining),
-                len(titles[i] & {fields[j].statement for j in coverage[i] & remaining}),
+                len(titles[i] & {fields[j].statement for j in effective_coverage[i] & remaining}),
+                len(numeric[i] & effective_coverage[i] & remaining),
+                len(effective_coverage[i] & remaining),
                 -i,
             ),
         )
         selected.append(best)
-        remaining.difference_update(coverage[best])
+        remaining.difference_update(effective_coverage[best])
     chosen = set(selected)
     return [ranked[i] for i in selected] + [candidate for i, candidate in enumerate(ranked) if i not in chosen]
 
@@ -655,9 +870,10 @@ async def search_pdf_pages(memory: _PDFMemory, question: str, limit: int = 10) -
     fields = _financial_fields(question)
     queries, weights, question_terms = _queries(question, fields)
     candidates = await _collect_page_candidates(memory, queries, limit)
+    question_terms = _resolve_issuer_terms(candidates, question_terms)
     seen_pages: set[str] = set()
     selected: list[MemoryCitation] = []
-    ranked = _cover_requested_statements(_rank_pages(candidates, weights, question_terms), question_terms)
+    ranked = _cover_requested_statements(_rank_pages(candidates, weights, question_terms, question), question_terms)
     ranked = _cover_financial_fields(ranked, fields, question_terms)
     # An explicitly named issuer and a single fiscal year identify a report. Preserve
     # cross-report answers for comparisons, and use the other pages as a fallback.
