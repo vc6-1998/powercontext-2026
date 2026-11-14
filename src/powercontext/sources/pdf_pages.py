@@ -23,6 +23,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
+from itertools import chain
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -32,6 +33,8 @@ from powercontext.sources.models import Source, SourceMaterialization
 from powercontext.sources.projections import TEXT_EVIDENCE_PROJECTION_KEY, TextEvidence
 
 if TYPE_CHECKING:
+    from pypdf import PageObject
+
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
     from powercontext.builtin.runtime.models import (
         GetMemoryEntryRequest,
@@ -70,6 +73,60 @@ class PDFPageInput(BaseModel):
         return PDFDocumentInput.require_document_id(value)
 
 
+def _extract_page_text(page: PageObject) -> str:
+    """Join independently positioned text runs using their painted start and end coordinates."""
+    plain = page.extract_text() or ""
+    # Normal paragraphs and tables already extract intact. A sequence of short
+    # words on separate lines, or many isolated letters, warrants inspecting placement.
+    words = plain.split()
+    if not words:
+        return plain
+    short_lines = re.findall(r"(?m)^[ \t]*[a-zA-Z]{1,3}[ \t]*$", plain)
+    singles = sum(len(word) == 1 and word.isalpha() for word in words)
+    consecutive_fragments = re.search(r"(?m)(?:^[ \t]*[A-Za-z]{1,3}[ \t]*\n){3}|(?:\b[A-Za-z]\b[ \t]+){3}", plain)
+    if consecutive_fragments is None and max(len(short_lines), singles) < max(3, len(words) / 4):
+        return plain
+
+    from pypdf._text_extraction._layout_mode._fixed_width_page import recurse_to_target_op
+    from pypdf._text_extraction._layout_mode._text_state_manager import TextStateManager
+    from pypdf.generic import ContentStream
+
+    contents = page.get("/Contents")
+    if contents is None:
+        return plain
+    # In the locked pypdf version the layout parser exposes glyph advances,
+    # including custom font encodings, kerning and text scaling. Use a single
+    # outer graphics-state scope to collect the page's positioned text runs.
+    operations = ContentStream(contents.get_object(), page.pdf, "bytes").operations
+    try:
+        _, runs = recurse_to_target_op(
+            chain(operations, [([], b"Q")]), TextStateManager(), b"Q", page._layout_mode_fonts(), False
+        )
+    except (ValueError, KeyError, TypeError, ArithmeticError):
+        # Layout is an optional improvement on the already decoded page.
+        return plain
+    parts: list[str] = []
+    previous = None
+    for run in runs:
+        if not run.text:
+            continue
+        if run.rotated or not run.font.interpretable:
+            return plain
+        sep = "\n"
+        if (
+            previous is not None
+            and run.tx >= previous.tx
+            and abs(previous.ty - run.ty) <= 0.12 * min(previous.font_height, run.font_height)
+        ):
+            sep = " " if run.tx - previous.displaced_tx > 0.13 * run.font_height else ""
+        parts.extend((sep, run.text))
+        previous = run
+    result = "".join(parts).strip()
+    # Embedded forms may be absent from the layout stream. Accept changes to
+    # whitespace only, never lose, duplicate, or reorder decoded characters.
+    return result if "".join(result.split()) == "".join(plain.split()) else plain
+
+
 def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
     """Extract every physical page, publishing nothing on a later page failure."""
     # Keep this optional dependency local: core users of other Sources need not install PDF support.
@@ -82,7 +139,7 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
             raise ValueError("PDF requires a non-empty user password")  # noqa: TRY003, TRY301
         pages = tuple(
             PDFPageInput(
-                document_id=value.document_id, document_sha256=digest, page_number=index, text=page.extract_text() or ""
+                document_id=value.document_id, document_sha256=digest, page_number=index, text=_extract_page_text(page)
             )
             for index, page in enumerate(reader.pages, start=1)
         )
@@ -322,7 +379,9 @@ _FINANCIAL_FIELDS = {
     "operating_income": _FinancialField(("operating income", "operating profit"), "income"),
     "revenue": _FinancialField(("net revenue", "net sales", "total revenue", "revenue", "sales"), "income"),
     "gross_profit": _FinancialField(("gross profit",), "income"),
-    "cost_of_sales": _FinancialField(("cost of sales", "cost of goods sold", "cost of revenue", "cogs"), "income"),
+    "cost_of_sales": _FinancialField(
+        ("cost of sales", "cost of goods sold", "cost of revenue", "merchandise costs", "cogs"), "income"
+    ),
     "depreciation": _FinancialField(("depreciation", "depreciation expense"), "cash"),
     "amortization": _FinancialField(("amortization", "amortisation"), "cash"),
     "operating_cash": _FinancialField(
@@ -464,7 +523,7 @@ def _requested_statements(query_terms: set[str]) -> set[str]:
 def _page_statements(text: str) -> set[str]:
     # Read titles near the page start, rather than incidental mentions in notes.
     # TOC entries ending in a page number are not financial statements themselves.
-    headings = [line.strip().casefold() for line in text.partition("\n")[2].splitlines() if line.strip()][:4]
+    headings = [" ".join(line.casefold().split()) for line in text.partition("\n")[2].splitlines() if line.strip()][:4]
     return {
         kind
         for line in headings
@@ -599,7 +658,12 @@ async def search_pdf_pages(memory: _PDFMemory, question: str, limit: int = 10) -
     seen_pages: set[str] = set()
     selected: list[MemoryCitation] = []
     ranked = _cover_requested_statements(_rank_pages(candidates, weights, question_terms), question_terms)
-    for candidate in _cover_financial_fields(ranked, fields, question_terms):
+    ranked = _cover_financial_fields(ranked, fields, question_terms)
+    # An explicitly named issuer and a single fiscal year identify a report. Preserve
+    # cross-report answers for comparisons, and use the other pages as a fallback.
+    if sum(bool(re.fullmatch(r"(?:19|20)\d{2}", term)) for term in question_terms) == 1:
+        ranked.sort(key=lambda row: _document_affinity(row.text, question_terms) == (True, True), reverse=True)
+    for candidate in ranked:
         record = (await memory.get(GetMemoryEntryRequest(citation=candidate.citation))).entry
         page_ids = {source.source_id for source in record.sources if source.source_type == "pdf-page"}
         if len(page_ids) != 1:

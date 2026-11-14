@@ -248,6 +248,7 @@ async def test_financial_metrics_retrieve_all_components_without_losing_narrativ
     ]
     observations = []
     target = []
+    policy_ids = set()
     for document_id in ("MERIDIAN_2025_ANNUAL", "MERIDIAN_2024_ANNUAL", "ORION_2025_ANNUAL"):
         pages = parse_pdf_document(
             PDFDocumentInput(
@@ -257,6 +258,8 @@ async def test_financial_metrics_retrieve_all_components_without_losing_narrativ
         for page in pages:
             source = await registry.resolve(page)
             observations.append(project_source_for_transport(registry, source))
+            if document_id.startswith("MERIDIAN_") and page.page_number == 4:
+                policy_ids.add(source.name)
             if document_id == "MERIDIAN_2025_ANNUAL":
                 target.append(source.name)
     config, scope_id, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, observations)
@@ -284,4 +287,39 @@ async def test_financial_metrics_retrieve_all_components_without_losing_narrativ
             assert {target[index] for index in required} <= found, metric
         (citation,) = await search_pdf_pages(memory, "How does MERIDIAN manage working capital policy?", limit=1)
         entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
+        assert len(entry.sources) == 1 and entry.sources[0].source_id in policy_ids
+        (citation,) = await search_pdf_pages(
+            memory, "How did MERIDIAN manage working capital policy in FY2025?", limit=1
+        )
+        entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
         assert {source.source_id for source in entry.sources} == {target[3]}
+
+
+@pytest.mark.parametrize(
+    "paragraph", ["", "A normal paragraph of longer words covers the majority of this page. " * 20]
+)
+def test_individually_positioned_letters_preserve_words_columns_and_line_breaks(paragraph: str) -> None:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=400, height=400)
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({
+            NameObject("/F1"): DictionaryObject({
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Courier"),
+            })
+        })
+    })
+    ops = [f"BT /F1 10 Tf 20 250 Td ({paragraph}) Tj ET"] if paragraph else []
+    for y, x, words in [(200, 20, "NET INCOME"), (200, 180, "56"), (175, 20, "TOTAL ASSETS"), (175, 180, "92")]:
+        for char in words:
+            if char != " ":
+                ops.append(f"q 1 0 0 1 {x} {y} cm BT /F1 10 Tf ({char}) Tj ET Q")
+            x += 6
+    stream = DecodedStreamObject()
+    stream.set_data(" ".join(ops).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    (captured,) = parse_pdf_document(PDFDocumentInput(document_id="text-runs", content=output.getvalue()))
+    assert captured.text.splitlines() == ([paragraph] if paragraph else []) + ["NET INCOME 56", "TOTAL ASSETS 92"]
