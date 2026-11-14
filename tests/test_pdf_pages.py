@@ -20,7 +20,15 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, IndirectObject, NameObject, NumberObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    IndirectObject,
+    NameObject,
+    NumberObject,
+    TextStringObject,
+)
 
 from competition.selftest_support.source_acceptance import persist
 from powercontext.builtin.runtime import GetMemoryEntryRequest, open_builtin_runtime
@@ -376,10 +384,16 @@ def test_two_long_text_fragments_form_one_word_without_a_global_short_word_trigg
     assert text.endswith("attributable")
 
 
-def test_mapped_separators_do_not_create_rows_inside_a_painted_text_run() -> None:
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Net\nincome\u00a0Debt service 42", "Net income Debt service 42"),
+        ("ﬁnancial ﬂows oﬃce ﬁled certiﬁcates", "financial flows office filed certificates"),
+    ],
+)
+def test_mapped_separators_and_ligatures_preserve_readable_words(text: str, expected: str) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=600, height=800)
-    text = "Net\nincome\u00a0Debt service 42"
     chars = list(dict.fromkeys(text))
     cmap = DecodedStreamObject()
     mappings = "\n".join(f"<{i:04x}> <{ord(char):04x}>" for i, char in enumerate(chars, 1))
@@ -415,7 +429,7 @@ def test_mapped_separators_do_not_create_rows_inside_a_painted_text_run() -> Non
     output = io.BytesIO()
     writer.write(output)
     captured = parse_pdf_document(PDFDocumentInput(document_id="mapped", content=output.getvalue()))[0].text
-    assert captured == "NetincomeDebt service 42"
+    assert captured == expected
 
 
 async def test_wrapped_titles_issuer_aliases_and_capital_intensity(tmp_path: Path) -> None:
@@ -481,3 +495,224 @@ async def test_specific_query_term_can_outweigh_common_terms_on_short_pages(tmp_
         (citation,) = await search_pdf_pages(memory, "CEDAR forensic compliance controls in FY2025", limit=1)
         entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
         assert {source.source_id for source in entry.sources} == {observations[0].name}
+
+
+@pytest.mark.parametrize(
+    ("operations", "expected"),
+    [
+        (
+            "BT /F1 10 Tf 20 700 Td (shar) Tj ET BT /F1 10 Tf 48 700 Td (es) Tj ET",
+            "shares",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td (word) Tj ET BT /F1 10 Tf 48.5 700 Td (boundary) Tj ET",
+            "word boundary",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td (FORM 10-K) Tj ET "
+            + " ".join(f"BT /F1 10 Tf {20 + 6 * i} 700 Td ({char}) Tj ET" for i, char in enumerate("FORM 10-K")),
+            "FORM 10-K",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td (A) Tj -4 Tc ( ) Tj 0 Tc (B) Tj ET",
+            "A B",
+        ),
+        (
+            "q .1 0 0 .1 0 0 cm BT /F1 100 Tf 200 7000 Td (2018) Tj 400 0 Td (2017) Tj ET Q",
+            "2018 2017",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td [( )0( )0( )] TJ ET BT /F1 10 Tf 25 700 Td [(2)0(0)0(2)0(2)] TJ ET",
+            "2022",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td (2022) Tj ( BOOKKEEPER) Tj ET",
+            "2022 BOOKKEEPER",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td [(2) (0) (2) (2) ( ) (B) (O) (O) (K)] TJ ET",
+            "2022 BOOK",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td [(A) -500 -500 (B)] TJ ET",
+            "A B",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td (shar) Tj ET BT /F1 10 Tf 45.5 700 Td (es) Tj ET",
+            "shares",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td (FORM 10-K) Tj ET BT /F1 10 Tf 20 700 Td (FORM 10-K) Tj ET",
+            "FORM 10-K",
+        ),
+        (
+            "BT /F1 10 Tf 20 700 Td (REVENUE) Tj ET BT /F1 10 Tf 20 675 Td (REVENUE) Tj ET",
+            "REVENUE\nREVENUE",
+        ),
+    ],
+)
+def test_positioned_words_preserve_kerning_and_only_remove_identical_overprints(operations: str, expected: str) -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["placeholder"])))
+    page = writer.pages[0]
+    page["/Resources"]["/Font"]["/F1"][NameObject("/BaseFont")] = NameObject("/Courier")
+    stream = DecodedStreamObject()
+    stream.set_data(operations.encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    assert parse_pdf_document(PDFDocumentInput(document_id="positions", content=output.getvalue()))[0].text == expected
+
+
+def test_heading_drawn_in_reverse_order_preserves_tracking_and_word_boundaries() -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["placeholder"])))
+    page = writer.pages[0]
+    page["/Resources"]["/Font"]["/F1"][NameObject("/BaseFont")] = NameObject("/Courier")
+    ops = []
+    x = 20
+    for char in "SUBSIDIARY BRANDS":
+        if char != " ":
+            ops.append(f"BT /F1 10 Tf {x} 700 Td ({char}) Tj ET")
+        x += 12 if char == " " else 8
+    stream = DecodedStreamObject()
+    stream.set_data(" ".join(reversed(ops)).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    assert (
+        parse_pdf_document(PDFDocumentInput(document_id="tracking", content=output.getvalue()))[0].text
+        == "SUBSIDIARY BRANDS"
+    )
+
+
+def test_font_variant_name_is_decoded_instead_of_becoming_body_text() -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["Annual Repor"])))
+    page = writer.pages[0]
+    font = page["/Resources"]["/Font"]["/F1"]
+    font[NameObject("/Encoding")] = DictionaryObject({
+        NameObject("/BaseEncoding"): NameObject("/WinAnsiEncoding"),
+        NameObject("/Differences"): ArrayObject([NumberObject(20), NameObject("/t.ss04")]),
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 10 Tf 20 700 Td (Annual Repor\\024) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    assert (
+        parse_pdf_document(PDFDocumentInput(document_id="variant", content=output.getvalue()))[0].text
+        == "Annual Report"
+    )
+
+
+def test_form_text_keeps_scoped_fonts_and_excludes_entirely_off_page_runs() -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["ROOT TEXT"])))
+    page = writer.pages[0]
+    form = DecodedStreamObject()
+    form.update({
+        NameObject("/Type"): NameObject("/XObject"),
+        NameObject("/Subtype"): NameObject("/Form"),
+        NameObject("/BBox"): ArrayObject([NumberObject(n) for n in (0, 0, 600, 800)]),
+        NameObject("/Resources"): DictionaryObject({
+            NameObject("/Font"): DictionaryObject({
+                NameObject("/F1"): DictionaryObject({
+                    NameObject("/Type"): NameObject("/Font"),
+                    NameObject("/Subtype"): NameObject("/Type1"),
+                    NameObject("/BaseFont"): NameObject("/Courier"),
+                })
+            })
+        }),
+    })
+    form.set_data(b"BT /F1 10 Tf -400 650 Td (HIDDEN ADDRESS) Tj ET BT /F1 10 Tf 20 650 Td (FORM TEXT 42) Tj ET")
+    page["/Resources"][NameObject("/XObject")] = DictionaryObject({NameObject("/Form1"): writer._add_object(form)})
+    stream = DecodedStreamObject()
+    contents = page.get_contents()
+    assert contents is not None
+    stream.set_data(contents.get_data() + b" q /Form1 Do Q")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    assert (
+        parse_pdf_document(PDFDocumentInput(document_id="forms", content=output.getvalue()))[0].text
+        == "ROOT TEXT\nFORM TEXT 42"
+    )
+
+
+@pytest.mark.parametrize(
+    ("marked", "expected"),
+    [
+        ("/Span << /ActualText (ti) >> BDC (X) Tj EMC", "certificate"),
+        ("/Span << /ActualText <FEFF00740069> >> BDC [(X) (Y)] TJ EMC", "certificate"),
+        (
+            "/Span << /ActualText (ti) >> BDC /Span << /ActualText (wrong) >> BDC (X) Tj EMC EMC",
+            "certificate",
+        ),
+        ("/Span << /ActualText () >> BDC (X) Tj EMC", "cerficate"),
+    ],
+)
+def test_marked_actual_text_replaces_the_sequence_once(marked: str, expected: str) -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["placeholder"])))
+    page = writer.pages[0]
+    stream = DecodedStreamObject()
+    stream.set_data(f"BT /F1 10 Tf 20 700 Td (cer) Tj {marked} (ficate) Tj ET".encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    assert (
+        parse_pdf_document(PDFDocumentInput(document_id="actual-text", content=output.getvalue()))[0].text == expected
+    )
+
+
+def test_named_actual_text_does_not_inline_unrelated_indirect_metadata() -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["placeholder"])))
+    page = writer.pages[0]
+    properties = DictionaryObject({
+        NameObject("/ActualText"): TextStringObject("ti"),
+        NameObject("/Metadata"): writer._add_object(DictionaryObject()),
+    })
+    page["/Resources"][NameObject("/Properties")] = DictionaryObject({
+        NameObject("/MC0"): writer._add_object(properties)
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 10 Tf 20 700 Td (cer) Tj /Span /MC0 BDC (X) Tj EMC (ficate) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    assert (
+        parse_pdf_document(PDFDocumentInput(document_id="named-actual", content=output.getvalue()))[0].text
+        == "certificate"
+    )
+
+
+def test_actual_text_on_a_space_is_not_mistaken_for_a_blank_page() -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["placeholder"])))
+    page = writer.pages[0]
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 10 Tf 20 700 Td /Span << /ActualText (Annual Report) >> BDC ( ) Tj EMC ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    assert (
+        parse_pdf_document(PDFDocumentInput(document_id="space-actual", content=output.getvalue()))[0].text
+        == "Annual Report"
+    )
+
+
+async def test_actual_text_unicode_stays_exact_after_memory_restart(tmp_path: Path) -> None:
+    writer = PdfWriter(clone_from=io.BytesIO(make_pdf(["placeholder"])))
+    stream = DecodedStreamObject()
+    stream.set_data(
+        b"BT /F1 10 Tf 20 700 Td /Span << /ActualText <FEFF037E002000630061006600650301> >> BDC (X) Tj EMC ET"
+    )
+    writer.pages[0][NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    page = parse_pdf_document(PDFDocumentInput(document_id="unicode-pdf", content=output.getvalue()))[0]
+    assert page.text == "; café"
+    registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+    observation = project_source_for_transport(registry, await registry.resolve(page))
+    config, scope, _ = await persist(tmp_path, PDF_PAGE_SOURCE_DEFINITION, [observation])
+    async with open_builtin_runtime(config) as runtime:
+        memory = runtime.memory.for_scope(scope)
+        (listed,) = (await memory.list()).entries
+        entry = (await memory.get(GetMemoryEntryRequest(citation=listed.citation))).entry
+        assert entry.text == "unicode-pdf\n; café"
+        assert entry.sources[0].source_id == observation.name

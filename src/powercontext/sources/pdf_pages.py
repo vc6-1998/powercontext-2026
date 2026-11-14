@@ -21,9 +21,9 @@ import io
 import json
 import math
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
-from itertools import chain
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -33,8 +33,6 @@ from powercontext.sources.models import Source, SourceMaterialization
 from powercontext.sources.projections import TEXT_EVIDENCE_PROJECTION_KEY, TextEvidence
 
 if TYPE_CHECKING:
-    from pypdf import PageObject
-
     from powercontext.builtin.artifacts.memory.models import MemoryCitation
     from powercontext.builtin.runtime.models import (
         GetMemoryEntryRequest,
@@ -73,129 +71,12 @@ class PDFPageInput(BaseModel):
         return PDFDocumentInput.require_document_id(value)
 
 
-def _without_blank_missing_fonts(page: PageObject) -> PageObject:  # noqa: C901
-    """Ignore null font entries only when they cannot hide any text glyphs."""
-    from copy import copy
-
-    from pypdf.generic import (
-        ArrayObject,
-        ByteStringObject,
-        ContentStream,
-        DictionaryObject,
-        IndirectObject,
-        NameObject,
-        NullObject,
-    )
-
-    resources = page.get("/Resources")
-    if resources is None:
-        return page
-    resources = resources.get_object()
-    fonts = resources.get("/Font")
-    if fonts is None:
-        return page
-    fonts = fonts.get_object()
-    missing = {
-        name
-        for name, reference in fonts.items()
-        if isinstance(reference, NullObject) or (isinstance(reference, IndirectObject) and reference.idnum == 0)
-    }
-    if not missing:
-        return page
-    content = page.get_contents()
-    operations = []
-    current_font = None
-    font_stack = []
-    for operands, operator in content.operations if content is not None else ():
-        if operator == b"q":
-            font_stack.append(current_font)
-        elif operator == b"Q" and font_stack:
-            current_font = font_stack.pop()
-        elif operator == b"Tf":
-            current_font = operands[0]
-            if current_font in missing:
-                continue
-        if current_font in missing and operator in (b"Tj", b"TJ", b"'", b'"'):
-            values = operands[-1] if operator == b"TJ" else operands[-1:]
-            if any(isinstance(value, (str, bytes)) and value.strip() for value in values):
-                raise ValueError("PDF text uses a missing font")  # noqa: TRY003
-            # Keep quote-operator positioning and text-state effects, but no glyphs.
-            operands = [*operands[:-1], ArrayObject() if operator == b"TJ" else ByteStringObject(b"")]
-        operations.append((operands, operator))
-    cleaned = copy(page)
-    clean_resources = DictionaryObject(resources)
-    clean_resources[NameObject("/Font")] = DictionaryObject({k: v for k, v in fonts.items() if k not in missing})
-    cleaned[NameObject("/Resources")] = clean_resources
-    stream = ContentStream(None, page.pdf)
-    stream.operations = operations
-    cleaned[NameObject("/Contents")] = stream
-    return cleaned
-
-
-def _extract_page_text(page: PageObject) -> str:
-    """Join independently positioned text runs using their painted start and end coordinates."""
-    page = _without_blank_missing_fonts(page)
-    plain = page.extract_text() or ""
-    if not plain.strip():
-        return plain
-
-    from pypdf._text_extraction._layout_mode._fixed_width_page import recurse_to_target_op
-    from pypdf._text_extraction._layout_mode._text_state_manager import TextStateManager
-    from pypdf.generic import ContentStream
-
-    contents = page.get("/Contents")
-    if contents is None:
-        return plain
-    # In the locked pypdf version the layout parser exposes glyph advances,
-    # including custom font encodings, kerning and text scaling. Use a single
-    # outer graphics-state scope to collect the page's positioned text runs.
-    operations = ContentStream(contents.get_object(), page.pdf, "bytes").operations
-    try:
-        _, runs = recurse_to_target_op(
-            chain(operations, [([], b"Q")]), TextStateManager(), b"Q", page._layout_mode_fonts(), False
-        )
-    except (ValueError, KeyError, TypeError, ArithmeticError):
-        # Layout is an optional improvement on the already decoded page.
-        return plain
-    parts: list[str] = []
-    previous = None
-    mapped_separators: dict[int, dict[int, None]] = {}
-    for run in runs:
-        if not run.text:
-            continue
-        if run.rotated or not run.font.interpretable:
-            return plain
-        sep = "\n"
-        if (
-            previous is not None
-            and run.tx >= previous.tx
-            and abs(previous.ty - run.ty) <= 0.12 * min(previous.font_height, run.font_height)
-        ):
-            sep = " " if run.tx - previous.displaced_tx > 0.13 * run.font_height else ""
-        font_key = id(run.font)
-        if font_key not in mapped_separators:
-            # Embedded CMaps may decode glyphs to non-printing separators within
-            # a single painted run. Physical line/column breaks come from geometry;
-            # ordinary spaces and literal newlines in simple-font text stay intact.
-            mapped_separators[font_key] = {
-                ord(char): None
-                for value in run.font.character_map.values()
-                if isinstance(value, str)
-                for char in ("\n", "\u00a0")
-                if char in value
-            }
-        parts.extend((sep, run.text.translate(mapped_separators[font_key])))
-        previous = run
-    result = "".join(parts).strip()
-    # Embedded forms may be absent from the layout stream. Accept changes to
-    # whitespace only, never lose, duplicate, or reorder decoded characters.
-    return result if "".join(result.split()) == "".join(plain.split()) else plain
-
-
 def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
     """Extract every physical page, publishing nothing on a later page failure."""
     # Keep this optional dependency local: core users of other Sources need not install PDF support.
     from pypdf import PdfReader
+
+    from powercontext.sources._pdf_text import extract_page_text
 
     digest = hashlib.sha256(value.content).hexdigest()
     try:
@@ -204,7 +85,12 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
             raise ValueError("PDF requires a non-empty user password")  # noqa: TRY003, TRY301
         pages = tuple(
             PDFPageInput(
-                document_id=value.document_id, document_sha256=digest, page_number=index, text=_extract_page_text(page)
+                document_id=value.document_id,
+                document_sha256=digest,
+                page_number=index,
+                # Memory canonicalizes Unicode. Capture the same canonical text
+                # so an exact citation preserves the complete Source projection.
+                text=unicodedata.normalize("NFC", extract_page_text(page)),
             )
             for index, page in enumerate(reader.pages, start=1)
         )
